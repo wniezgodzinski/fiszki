@@ -1,0 +1,18 @@
+{
+ "version": 1,
+ "updated": "2026-11-20T00:00:00.000Z",
+ "cards": [
+  {"id": "s0001", "es": "la cuenta", "pl": "rachunek", "ex": "¿Me trae la cuenta, por favor?", "tags": ["przykład", "restauracja"], "lesson": "2026-11-13"},
+  {"id": "s0002", "es": "tener ganas de", "pl": "mieć ochotę na", "ex": "Tengo ganas de viajar.", "tags": ["przykład", "zwroty"], "lesson": "2026-11-13"},
+  {"id": "s0003", "es": "el camarero", "pl": "kelner", "ex": "El camarero es muy amable.", "tags": ["przykład", "restauracja"], "lesson": "2026-11-13"},
+  {"id": "s0004", "es": "pedir", "pl": "zamawiać, prosić o", "ex": "Quiero pedir una paella.", "tags": ["przykład", "restauracja"], "lesson": "2026-11-13"},
+  {"id": "s0005", "es": "la propina", "pl": "napiwek", "ex": "Dejamos una propina.", "tags": ["przykład", "restauracja"], "lesson": "2026-11-13"},
+  {"id": "s0006", "es": "¿Qué me recomienda?", "pl": "Co mi Pan/Pani poleca?", "ex": "", "tags": ["przykład", "zwroty"], "lesson": "2026-11-13"},
+  {"id": "s0007", "es": "el fin de semana", "pl": "weekend", "ex": "¿Qué haces el fin de semana?", "tags": ["przykład"], "lesson": "2026-11-20"},
+  {"id": "s0008", "es": "quedar con", "pl": "umówić się z", "ex": "He quedado con mis amigos.", "tags": ["przykład", "zwroty"], "lesson": "2026-11-20"},
+  {"id": "s0009", "es": "a menudo", "pl": "często", "ex": "Voy al cine a menudo.", "tags": ["przykład"], "lesson": "2026-11-20"},
+  {"id": "s0010", "es": "madrugar", "pl": "wcześnie wstawać", "ex": "No me gusta madrugar.", "tags": ["przykład"], "lesson": "2026-11-20"},
+  {"id": "s0011", "es": "echar de menos", "pl": "tęsknić za", "ex": "Echo de menos a mi familia.", "tags": ["przykład", "zwroty"], "lesson": "2026-11-20"},
+  {"id": "s0012", "es": "la playa", "pl": "plaża", "ex": "Vamos a la playa en verano.", "tags": ["przykład"], "lesson": "2026-11-20"}
+ ]
+}
