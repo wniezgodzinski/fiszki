@@ -13,7 +13,7 @@
   const DIRS = ['es2pl', 'pl2es'];
   const DIR_LABEL = { es2pl: 'ES → PL', pl2es: 'PL → ES' };
   const HTTP = /^https?:$/.test(location.protocol);
-  const APP_VERSION = '7 (2026-11-21)';
+  const APP_VERSION = '9 (2026-11-21)';
 
   const uid = p => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -44,8 +44,9 @@
   function defaultProfile(name) {
     return {
       name, created: Date.now(),
-      settings: { newPerDay: 10, es2pl: true, pl2es: true, typingShare: 20, autoSpeak: false, maxReviews: 200, shareStats: true },
-      prog: {}, priv: [], known: {}, seen: {}, days: {},
+      settings: { newPerDay: 10, es2pl: true, pl2es: true, typingShare: 20, autoSpeak: false, maxReviews: 200, shareStats: true,
+        conjTenses: ['pres', 'perf', 'ger'], conjMode: 'mix', conjCount: 15 },
+      prog: {}, priv: [], known: {}, seen: {}, days: {}, conj: {},
       newToday: { day: '', es2pl: 0, pl2es: 0 }, lastBackup: 0
     };
   }
@@ -67,7 +68,8 @@
   const st = (id, dir) => (P.prog[id] && P.prog[id][dir]) || null;
   function setSt(id, dir, s) { if (!P.prog[id]) P.prog[id] = {}; P.prog[id][dir] = s; }
   function nt() { if (P.newToday.day !== dayKey()) P.newToday = { day: dayKey(), es2pl: 0, pl2es: 0 }; return P.newToday; }
-  function logDay(field, n) { const k = dayKey(); const d = P.days[k] || (P.days[k] = { rev: 0, ok: 0, nw: 0 }); d[field] += (n || 1); }
+  function logDay(field, n) { const k = dayKey(); const d = P.days[k] || (P.days[k] = { rev: 0, ok: 0, nw: 0 }); d[field] = (d[field] || 0) + (n || 1); }
+  const activity = d => d ? (d.rev || 0) + (d.conj || 0) : 0;   // fiszki + odmiana – do serii dni i mapy aktywności
   const sortByLesson = cards => cards.slice().sort((a, b) => (a.lesson || '').localeCompare(b.lesson || '') || a.ord - b.ord);
 
   function cardStatus(c) {
@@ -158,6 +160,36 @@
     speechSynthesis.speak(u);
   }
 
+  // ---------- rozpoznawanie mowy (🎤) ----------
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let recActive = null;
+  const RANK = { ok: 4, accent: 3, article: 2, typo: 1, bad: 0 };
+  function setMicState(on) {
+    document.querySelectorAll('.mic').forEach(b => { b.classList.toggle('listening', on); b.textContent = on ? '🔴 Słucham… (stuknij, by przerwać)' : '🎤 Powiedz'; });
+  }
+  function stopListening() { if (recActive) { try { recActive.abort(); } catch (e) { /* */ } recActive = null; } setMicState(false); }
+  // lang: 'es-ES' albo 'pl-PL'; onText dostaje kilka wariantów tego, co usłyszano
+  function listen(lang, onText) {
+    if (!SR) { toast('Ta przeglądarka nie obsługuje rozpoznawania mowy'); return; }
+    if (recActive) { stopListening(); return; }
+    if ('speechSynthesis' in window) speechSynthesis.cancel();
+    const rec = new SR();
+    rec.lang = lang; rec.interimResults = false; rec.maxAlternatives = 5; rec.continuous = false;
+    rec.onresult = e => {
+      const r = e.results[0], alts = [];
+      for (let i = 0; i < r.length; i++) if (r[i].transcript.trim()) alts.push(r[i].transcript.trim());
+      if (alts.length) onText(alts);
+    };
+    rec.onerror = e => {
+      const m = { 'not-allowed': 'Brak zgody na mikrofon – zezwól w ustawieniach', 'service-not-allowed': 'Rozpoznawanie mowy jest tu niedostępne – spróbuj w Safari/Chrome',
+        'no-speech': 'Nic nie usłyszałem – spróbuj jeszcze raz', network: 'Rozpoznawanie mowy wymaga internetu', 'audio-capture': 'Brak dostępu do mikrofonu', aborted: '' }[e.error];
+      if (m !== '') toast(m || ('Błąd rozpoznawania mowy: ' + e.error), 3500);
+    };
+    rec.onend = () => { recActive = null; setMicState(false); };
+    try { rec.start(); recActive = rec; setMicState(true); } catch (e) { toast('Nie udało się włączyć mikrofonu'); }
+  }
+  const micBtn = () => (SR ? `<button type="button" class="mic" data-act="mic">🎤 Powiedz</button>` : '');
+
   // ---------- sprawdzanie wpisanej odpowiedzi ----------
   function norm(s, keepAccents) {
     s = String(s).toLowerCase().replace(/\(.*?\)/g, ' ').replace(/[¿¡?!.,;:"'«»…]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -210,7 +242,7 @@
     nextCard();
   }
   function endSession() {
-    session = null; document.body.classList.remove('in-session');
+    stopListening(); session = null; document.body.classList.remove('in-session');
     if ('speechSynthesis' in window) speechSynthesis.cancel();
     render();
     syncStats(true);
@@ -238,6 +270,7 @@
   }
   function reveal(typed) {
     const it = session.cur; if (!it || it.shown) return;
+    stopListening();
     const c = session.cards[it.id];
     if (it.typing) it.check = checkTyped(typed || '', it.dir === 'es2pl' ? c.pl : c.es);
     it.shown = true;
@@ -294,6 +327,7 @@
     if (it.typing && !it.shown) {
       body += `<input id="typeIn" class="type-input" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${it.dir === 'es2pl' ? 'Wpisz po polsku…' : 'Escribe en español…'}">`;
       if (it.dir === 'pl2es') body += `<div class="accents">${['á', 'é', 'í', 'ó', 'ú', 'ñ', 'ü', '¿', '¡'].map(a => `<button type="button" data-act="acc" data-ch="${a}">${a}</button>`).join('')}</div>`;
+      body += micBtn();
     }
     if (it.shown) {
       body += `<div class="back">`;
@@ -301,7 +335,8 @@
         const k = it.check.kind;
         const msg = { ok: ['ok', '✔ Dobrze!'], accent: ['meh', '✔ Prawie – uwaga na akcenty'], article: ['meh', '✔ Prawie – pamiętaj o rodzajniku'], typo: ['meh', '≈ Literówka?'], bad: ['bad', '✘ Niestety nie'] }[k];
         body += `<div class="verdict ${msg[0]}">${msg[1]}</div>`;
-        if (k !== 'ok') body += `<div class="small">Twoja odpowiedź: <span class="diff-you">${esc(it.typedValue || '—')}</span></div>`;
+        if (k !== 'ok') body += `<div class="small">${it.heard ? '🎤 Usłyszałem' : 'Twoja odpowiedź'}: <span class="diff-you">${esc(it.typedValue || '—')}</span></div>`;
+        else if (it.heard) body += `<div class="small muted">🎤 Usłyszałem: ${esc(it.typedValue)}</div>`;
       }
       body += `<div class="ans">${esc(back)}</div>`;
       if (c.ex) body += `<div class="ex">${esc(c.ex)}</div>`;
@@ -343,18 +378,241 @@
     if (ti) { ti.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); session.cur.typedValue = ti.value; reveal(ti.value); } }); setTimeout(() => ti.focus(), 50); }
   }
 
+  // ---------- odmiana czasowników ----------
+  const CONJ_INT = [0, 1, 2, 4, 8, 16];   // dni do kolejnej powtórki dla „pudełek” 0–5
+  function verbList() {
+    const map = new Map();
+    CONJ.CORE.forEach(([v, pl]) => map.set(v, { v, pl, core: true }));
+    allCards().filter(c => (c.tags || []).includes('czasowniki')).forEach(c => {
+      const s = String(c.es).toLowerCase().replace(/\(.*?\)/g, ' ').split(/[\/→,≠]/)[0].trim();
+      const w = s.split(/\s+/)[0];
+      if (!CONJ.isVerb(w) || CONJ.EXCLUDE.has(w)) return;
+      if (!map.has(w)) map.set(w, { v: w, pl: String(c.pl).split(/[;(]/)[0].trim(), core: false });
+    });
+    return [...map.values()].sort((a, b) => a.v.localeCompare(b.v, 'es'));
+  }
+  const conjTenses = () => (P.settings.conjTenses || []).filter(t => CONJ.TENSES[t]);
+  function conjKeys() {
+    const out = [];
+    verbList().forEach(x => conjTenses().forEach(t => { if (!(t === 'ger' && CONJ.NO_GER.has(CONJ.parse(x.v).base))) out.push({ key: x.v + '|' + t, v: x.v, t, pl: x.pl, core: x.core }); }));
+    return out;
+  }
+  function conjStats() {
+    const keys = conjKeys(), now = Date.now();
+    let due = 0, mastered = 0, seen = 0;
+    keys.forEach(k => { const s = P.conj[k.key]; if (s) { seen++; if (s.due <= now) due++; if (s.box >= 4) mastered++; } });
+    return { total: keys.length, due, mastered, seen };
+  }
+  function buildConjQueue(n) {
+    const now = Date.now(), keys = conjKeys();
+    const due = shuffle(keys.filter(k => P.conj[k.key] && P.conj[k.key].due <= now)).sort((a, b) => P.conj[a.key].box - P.conj[b.key].box);
+    // nowe: najpierw podstawowe i nieregularne czasowniki
+    const fresh = shuffle(keys.filter(k => !P.conj[k.key])).sort((a, b) =>
+      (b.core - a.core) || (CONJ.isIrregularVerb(b.v) - CONJ.isIrregularVerb(a.v)));
+    const later = shuffle(keys.filter(k => P.conj[k.key] && P.conj[k.key].due > now));
+    const pick = due.slice(0, n);
+    pick.push(...fresh.slice(0, Math.max(Math.ceil(n / 2), n - pick.length)).slice(0, n - pick.length));
+    if (pick.length < n) pick.push(...later.slice(0, n - pick.length));
+    return shuffle(pick).map(k => {
+      let p = Math.floor(Math.random() * 6);
+      return Object.assign({}, k, { p });
+    });
+  }
+  function conjChoices(it) {
+    const ans = CONJ.conjugate(it.v, it.t, it.p).answer, set = new Set([norm(ans, false)]), out = [];
+    // bez opcji różniących się od poprawnej tylko akcentem
+    const add = f => { const k = norm(f || '', false); if (f && !set.has(k)) { set.add(k); out.push(f); } };
+    if (CONJ.parse(it.v).stem.length >= 2) add(CONJ.conjugate(it.v, it.t, it.p, true).answer);   // „uregulowana” (błędna) forma
+    shuffle([0, 1, 2, 3, 4, 5].filter(x => x !== it.p)).forEach(q => { if (out.length < 2) add(CONJ.conjugate(it.v, it.t, q).answer); });
+    shuffle(conjTenses().filter(t => t !== it.t && !(t === 'ger' && CONJ.NO_GER.has(CONJ.parse(it.v).base)))).forEach(t => add(CONJ.conjugate(it.v, t, it.p).answer));
+    shuffle([0, 1, 2, 3, 4, 5]).forEach(q => { if (out.length < 3) add(CONJ.conjugate(it.v, it.t, q).answer); });
+    return shuffle([ans].concat(out.slice(0, 3)));
+  }
+  function checkConj(input, it) {
+    const c = CONJ.conjugate(it.v, it.t, it.p);
+    const strip = s => norm(s, true).replace(/^(yo|tú|tu|él|el|ella|usted|nosotros|nosotras|vosotros|vosotras|ellos|ellas|ustedes)\s+/, '');
+    const inp = strip(input), inpN = norm(inp, false);
+    if (!inpN) return { kind: 'bad', best: c.answer };
+    if (c.alts.some(a => norm(a, true) === inp)) return { kind: 'ok', best: c.answer };
+    if (c.alts.some(a => norm(a, false) === inpN)) return { kind: 'accent', best: c.answer };
+    return { kind: 'bad', best: c.answer };
+  }
+
+  let cs = null;   // sesja odmiany
+  function startConj() {
+    if (!conjTenses().length) { toast('Wybierz co najmniej jeden czas'); return; }
+    const q = buildConjQueue(P.settings.conjCount || 15);
+    if (!q.length) { toast('Brak czasowników do ćwiczeń'); return; }
+    cs = { queue: q, total: q.length, done: 0, ok: 0, cur: null, mistakes: [] };
+    closeModal(); document.body.classList.add('in-session');
+    nextConj();
+  }
+  function endConj() {
+    stopListening(); cs = null; document.body.classList.remove('in-session'); render(); syncStats(true);
+  }
+  function nextConj() {
+    stopListening();
+    const it = cs.queue.shift();
+    if (!it) { cs.cur = null; renderConj(); return; }
+    const mode = P.settings.conjMode || 'mix';
+    it.choice = mode === 'choice' || (mode === 'mix' && Math.random() < 0.5);
+    if (it.choice) it.opts = conjChoices(it);
+    it.shown = false; it.res = null; it.typed = '';
+    cs.cur = it; renderConj();
+  }
+  function answerConj(typed, heardAlts) {
+    const it = cs.cur; if (!it || it.shown) return;
+    stopListening();
+    if (heardAlts) {   // z kilku wariantów rozpoznanej mowy wybierz najlepiej pasujący
+      it.heard = true;
+      typed = heardAlts.map(a => ({ a, r: checkConj(a, it) })).sort((x, y) => RANK[y.r.kind] - RANK[x.r.kind])[0].a;
+    }
+    it.typed = typed || '';
+    it.res = checkConj(it.typed, it);
+    it.shown = true;
+    const good = it.res.kind !== 'bad';
+    it.prev = P.conj[it.key] ? Object.assign({}, P.conj[it.key]) : null;   // do ewentualnego „Jednak dobrze”
+    const s = P.conj[it.key] || { box: 0, due: 0, ok: 0, bad: 0 };
+    if (!it.retry) {   // do statystyk i harmonogramu liczy się pierwsza próba
+      if (good) { s.ok++; s.box = Math.min(5, s.box + 1); } else { s.bad++; s.box = 0; }
+      s.due = good ? SRS.dueInDays(Date.now(), CONJ_INT[s.box]) : Date.now();
+      s.last = Date.now(); P.conj[it.key] = s;
+      logDay('conj'); if (good) { logDay('conjOk'); cs.ok++; }
+      if (!good) cs.mistakes.push(it);
+      saveP();
+    }
+    // błędna forma wraca jeden raz na koniec sesji
+    if (!good && !it.retry) cs.queue.push(Object.assign({}, it, { retry: true, shown: false, heard: false, opts: it.choice ? conjChoices(it) : null }));
+    else cs.done++;
+    renderConj();
+  }
+  // „Jednak dobrze” – cofa złą ocenę (np. źle rozpoznana mowa albo literówka) i liczy odpowiedź jako poprawną
+  function overrideConj() {
+    const it = cs.cur; if (!it || !it.shown || it.res.kind !== 'bad') return;
+    if (!it.retry) {
+      const s = it.prev ? Object.assign({}, it.prev) : { box: 0, due: 0, ok: 0, bad: 0 };
+      s.ok++; s.box = Math.min(5, s.box + 1); s.due = SRS.dueInDays(Date.now(), CONJ_INT[s.box]); s.last = Date.now();
+      P.conj[it.key] = s;
+      logDay('conjOk'); cs.ok++;
+      cs.mistakes = cs.mistakes.filter(m => m !== it);
+      cs.queue = cs.queue.filter(x => !(x.retry && x.key === it.key && x.p === it.p));
+      cs.done++;
+      saveP();
+    }
+    it.res = { kind: 'ok', best: it.res.best, override: true };
+    renderConj();
+  }
+  function renderConj() {
+    if (!cs.cur) {
+      const pct = cs.total ? Math.round(100 * cs.ok / cs.total) : 0;
+      view.innerHTML = `<div class="done"><div class="emoji">${pct >= 80 ? '🏆' : '💪'}</div><h1>${pct >= 80 ? '¡Excelente!' : '¡Sigue así!'}</h1>
+        <p>Poprawnie za pierwszym razem: <b>${cs.ok} z ${cs.total}</b> (${pct}%).</p>
+        ${cs.mistakes.length ? `<div class="panel" style="text-align:left"><b>Do powtórki</b>${cs.mistakes.map(m => `<div class="small" style="margin-top:6px"><b>${esc(m.v)}</b> · ${esc(CONJ.PERSONS[m.p])} · ${esc(CONJ.TENSES[m.t])} → <span class="top">${esc(CONJ.conjugate(m.v, m.t, m.p).answer)}</span></div>`).join('')}</div>` : ''}
+        <button class="btn" data-act="conj-end">Wróć</button></div>`;
+      return;
+    }
+    const it = cs.cur;
+    const left = cs.queue.length + 1;
+    const pct = Math.round(100 * cs.done / (cs.done + left));
+    let body = `<div class="badge">${esc(CONJ.TENSES[it.t])}</div>
+      <div class="front" style="margin-top:10px">${esc(it.v)}</div>
+      <div class="muted">${esc(it.pl)}</div>
+      <div class="person">${esc(CONJ.PERSONS[it.p])}</div>`;
+    let actions = '';
+    if (!it.shown) {
+      if (it.choice) {
+        actions = `<div class="choices">${it.opts.map((o, i) => `<button data-act="conj-pick" data-i="${i}"><small>${i + 1}</small> ${esc(o)}</button>`).join('')}</div>`;
+      } else {
+        body += `<input id="conjIn" class="type-input" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Wpisz formę…">
+          <div class="accents">${['á', 'é', 'í', 'ó', 'ú', 'ñ'].map(a => `<button type="button" data-act="acc-conj" data-ch="${a}">${a}</button>`).join('')}</div>
+          ${micBtn()}`;
+        actions = `<button class="btn" data-act="conj-check">Sprawdź</button><button class="btn ghost" data-act="conj-dontknow">Nie wiem</button>`;
+      }
+    } else {
+      const k = it.res.kind;
+      const msg = { ok: ['ok', '✔ Dobrze!'], accent: ['meh', '✔ Dobrze – uwaga na akcenty'], bad: ['bad', '✘ Niestety nie'] }[k];
+      const rows = CONJ.table(it.v, it.t);
+      body += `<div class="back">
+        <div class="verdict ${msg[0]}">${msg[1]}</div>
+        ${k !== 'ok' && it.typed ? `<div class="small">${it.heard ? '🎤 Usłyszałem' : 'Twoja odpowiedź'}: <span class="diff-you">${esc(it.typed)}</span></div>` : ''}
+        ${k === 'ok' && it.heard ? `<div class="small muted">🎤 Usłyszałem: ${esc(it.typed)}</div>` : ''}
+        ${it.res.override ? `<div class="small muted">(uznane ręcznie)</div>` : ''}
+        <div class="ans">${esc(it.res.best)}</div>
+        <table class="conj-table">${rows.map((r, i) => `<tr class="${i === it.p ? 'cur' : ''}"><td>${esc(r.person)}</td><td class="${r.irregular ? 'irr' : ''}">${esc(r.form)}</td></tr>`).join('')}</table>
+        <p class="small muted" style="margin:6px 0 0"><span class="irr">pogrubione</span> = forma nieregularna</p>
+      </div>`;
+      actions = `<button class="btn" data-act="conj-next">Dalej</button>
+        ${it.res.kind === 'bad' && it.typed ? `<button class="btn ghost" data-act="conj-override">Jednak dobrze (źle rozpoznane / literówka)</button>` : ''}`;
+    }
+    view.innerHTML = `
+      <div class="session-top">
+        <button class="x" data-act="conj-end" aria-label="Zakończ">✕</button>
+        <div class="progress"><div style="width:${pct}%"></div></div>
+        <div class="counts">${left} do końca</div>
+      </div>
+      <div class="flash"><div class="dir">🔤 odmiana${it.retry ? ' · powtórka' : ''}</div>
+        <div class="tools"><button data-act="speak-text" data-text="${esc(it.v)}" title="Wymowa">🔊</button></div>
+        ${body}</div>
+      ${actions}`;
+    const inp = $('#conjIn');
+    if (inp) { inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); answerConj(inp.value); } }); setTimeout(() => inp.focus(), 50); }
+  }
+  function conjSetup() {
+    const S = P.settings, st = conjStats();
+    const tens = Object.keys(CONJ.TENSES).map(t => `<div class="switch"><span>${esc(CONJ.TENSES[t])} <small class="muted">(${esc(CONJ.TENSE_PL[t])})</small></span>
+      <input type="checkbox" data-conj-tense="${t}" ${(S.conjTenses || []).includes(t) ? 'checked' : ''}></div>`).join('');
+    openModal(`<h2>🔤 Odmiana czasowników</h2>
+      <p class="small muted" style="margin-top:0">${verbList().length} czasowników · do powtórki: <b>${st.due}</b> · opanowane formy: <b>${st.mastered}</b> z ${st.total}</p>
+      ${tens}
+      <div class="switch"><span>Tryb odpowiedzi</span><select id="conjMode">
+        ${[['mix', 'mieszany'], ['type', 'wpisywanie'], ['choice', 'wybór z 4']].map(([v, l]) => `<option value="${v}" ${S.conjMode === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      <div class="switch"><span>Liczba zadań</span><select id="conjCount">
+        ${[10, 15, 25, 40].map(n => `<option ${S.conjCount == n ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
+      <button class="btn" data-act="conj-start">Start</button>
+      <button class="btn ghost" data-act="conj-tables">📖 Tabele odmiany</button>
+      <button class="btn ghost" data-act="close">Zamknij</button>`);
+    $('#modalBox').querySelectorAll('[data-conj-tense]').forEach(el => el.addEventListener('change', () => {
+      const t = el.dataset.conjTense, cur = new Set(S.conjTenses || []);
+      if (el.checked) cur.add(t); else cur.delete(t);
+      S.conjTenses = Object.keys(CONJ.TENSES).filter(x => cur.has(x)); saveP();
+    }));
+    $('#conjMode').addEventListener('change', e => { S.conjMode = e.target.value; saveP(); });
+    $('#conjCount').addEventListener('change', e => { S.conjCount = Number(e.target.value); saveP(); });
+  }
+  function conjTables(q) {
+    const list = verbList().filter(x => !q || x.v.includes(q.toLowerCase()) || x.pl.toLowerCase().includes(q.toLowerCase()));
+    openModal(`<h2>📖 Tabele odmiany</h2>
+      <input id="conjQ" class="search" type="search" placeholder="Szukaj czasownika…" value="${esc(q || '')}">
+      <ul class="wlist">${list.map(x => `<li data-act="conj-table" data-v="${esc(x.v)}"><div class="w"><div class="es">${esc(x.v)}</div><div class="pl">${esc(x.pl)}</div></div>
+        <div class="meta">${CONJ.isIrregularVerb(x.v) ? 'nieregularny' : 'regularny'}</div></li>`).join('')}</ul>
+      <button class="btn ghost" data-act="conj-setup">← Wróć</button>`);
+    const qi = $('#conjQ');
+    qi.addEventListener('input', () => { const pos = qi.selectionStart; conjTables(qi.value); const n = $('#conjQ'); n.focus(); n.setSelectionRange(pos, pos); });
+  }
+  function conjTable(v) {
+    const x = verbList().find(y => y.v === v) || { v, pl: '' };
+    const tenses = Object.keys(CONJ.TENSES).filter(t => !(t === 'ger' && CONJ.NO_GER.has(CONJ.parse(v).base)));
+    openModal(`<h2 style="margin-bottom:2px">${esc(v)} <button class="btn inline ghost" data-act="speak-text" data-text="${esc(v)}">🔊</button></h2>
+      <p class="muted" style="margin-top:0">${esc(x.pl)}</p>
+      ${tenses.map(t => `<p class="small" style="margin:12px 0 4px"><b>${esc(CONJ.TENSES[t])}</b></p>
+        <table class="conj-table">${CONJ.table(v, t).map(r => `<tr><td>${esc(r.person)}</td><td class="${r.irregular ? 'irr' : ''}">${esc(r.form)}</td></tr>`).join('')}</table>`).join('')}
+      <p class="small muted"><span class="irr">pogrubione</span> = forma nieregularna</p>
+      <button class="btn ghost" data-act="conj-tables">← Lista czasowników</button>`);
+  }
+
   // ---------- widoki ----------
   function render() {
     $('#profileBtn').textContent = '👤 ' + (P ? P.name : '');
     $('#profileBtn').hidden = !P;
     document.querySelectorAll('.tabbar button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+    if (cs) return renderConj();
     if (session) return renderSession();
     ({ home: renderHome, words: renderWords, stats: renderStats, settings: renderSettings })[tab]();
   }
 
   function streak() {
     let n = 0, d = new Date(Date.now() - 4 * 3600e3);
-    const has = dd => { const k = dd.getFullYear() + '-' + pad(dd.getMonth() + 1) + '-' + pad(dd.getDate()); return P.days[k] && P.days[k].rev > 0; };
+    const has = dd => { const k = dd.getFullYear() + '-' + pad(dd.getMonth() + 1) + '-' + pad(dd.getDate()); return activity(P.days[k]) > 0; };
     if (!has(d)) d.setDate(d.getDate() - 1);
     while (has(d)) { n++; d.setDate(d.getDate() - 1); }
     return n;
@@ -388,6 +646,7 @@
       <button class="btn" data-act="start" ${due + q.news.length ? '' : 'disabled'}>${due + q.news.length ? 'Rozpocznij naukę' : '✔ Na dziś wszystko zrobione!'}</button>
       <button class="btn secondary" data-act="start-typing" ${due + q.news.length ? '' : 'disabled'}>⌨️ Ta sama nauka, ale z wpisywaniem</button>
       <button class="btn ghost" data-act="sets" ${total ? '' : 'disabled'}>🏷️ Wybierz lekcję lub temat</button>
+      <button class="btn ghost" data-act="conj-setup">🔤 Odmiana czasowników${(() => { const d = conjStats().due; return d ? ` <span class="muted">(${d} do powtórki)</span>` : ''; })()}</button>
       <div class="panel">
         <b>Dodatkowe ćwiczenia</b>
         <p class="muted small" style="margin:4px 0 8px">Nie zmieniają harmonogramu powtórek – można ćwiczyć do woli.</p>
@@ -395,7 +654,7 @@
         <button class="btn ghost" data-act="practice-hard" ${hard.length ? '' : 'disabled'}>🧠 Trudne słowa (${hard.length})</button>
         <button class="btn ghost" data-act="practice-type" ${studied.length ? '' : 'disabled'}>✍️ Wpisywanie – losowe znane słowa</button>
       </div>
-      <p class="muted small">Dziś: ${today.rev} odpowiedzi · Słów w bazie: ${total} · Czeka nowych: ${q.freshTotal}</p>`;
+      <p class="muted small">Dziś: ${today.rev} odpowiedzi${today.conj ? ` + ${today.conj} w odmianie` : ''} ·Słów w bazie: ${total} · Czeka nowych: ${q.freshTotal}</p>`;
   }
 
   function renderWords() {
@@ -636,7 +895,7 @@
     for (let i = 0; i < 84; i++) {
       const d = new Date(start.getTime() + i * SRS.DAY);
       const k = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
-      const n = (P.days[k] || {}).rev || 0;
+      const n = activity(P.days[k]);
       const future = d.getTime() > now;
       heat += `<div class="${future ? '' : n >= 60 ? 'h4' : n >= 30 ? 'h3' : n >= 10 ? 'h2' : n > 0 ? 'h1' : ''}" style="${future ? 'opacity:.25' : ''}" title="${k}: ${n}"></div>`;
     }
@@ -659,6 +918,21 @@
         <div><b>${counts.mature}</b><span>opanowane</span></div>
       </div>
       ${renderBoard()}
+      ${(() => {
+        const cst = conjStats(); let c30 = 0, ok = 0;
+        for (let i = 0; i < 30; i++) { const d = P.days[dayKey(now - i * SRS.DAY)]; if (d) { c30 += d.conj || 0; ok += d.conjOk || 0; } }
+        const hardV = {};
+        Object.keys(P.conj).forEach(k => { const v = k.split('|')[0]; hardV[v] = (hardV[v] || 0) + (P.conj[k].bad || 0); });
+        const top = Object.keys(hardV).filter(v => hardV[v] > 0).sort((a, b) => hardV[b] - hardV[a]).slice(0, 5);
+        return `<div class="panel"><b>🔤 Odmiana czasowników</b>
+          <div class="big-numbers" style="margin:10px 0 6px">
+            <div><b>${c30}</b><span>zadań (30 dni)</span></div>
+            <div><b>${c30 ? Math.round(100 * ok / c30) : 0}%</b><span>trafność</span></div>
+            <div><b>${cst.mastered}</b><span>opanowane z ${cst.total}</span></div>
+          </div>
+          ${top.length ? `<p class="small" style="margin:4px 0">Najtrudniejsze: ${top.map(v => `<a href="#" data-act="conj-table" data-v="${esc(v)}">${esc(v)}</a> (${hardV[v]}×)`).join(' · ')}</p>` : '<p class="muted small" style="margin:4px 0">Jeszcze bez błędów.</p>'}
+        </div>`;
+      })()}
       <div class="panel small">
         Wszystkich słów: <b>${cards.length}</b> · nowe ${counts.new} · w nauce ${counts.learn} · powtarzane ${counts.young} ·
         opanowane ${counts.mature} · trudne ${counts.hard} · znane ${counts.known}
@@ -825,13 +1099,20 @@
     const now = Date.now(), cards = allCards();
     const days14 = [];
     for (let i = 13; i >= 0; i--) { const d = P.days[dayKey(now - i * SRS.DAY)]; days14.push(d ? d.rev : 0); }
-    let rev7 = 0, rev30 = 0, ok30 = 0, total = 0, last = '';
-    for (let i = 0; i < 30; i++) { const d = P.days[dayKey(now - i * SRS.DAY)]; if (d) { rev30 += d.rev; ok30 += d.ok; if (i < 7) rev7 += d.rev; } }
-    Object.keys(P.days).forEach(k => { total += P.days[k].rev; if (P.days[k].rev > 0 && k > last) last = k; });
+    let rev7 = 0, rev30 = 0, ok30 = 0, total = 0, last = '', conj7 = 0, conj30 = 0, conjOk30 = 0;
+    for (let i = 0; i < 30; i++) {
+      const d = P.days[dayKey(now - i * SRS.DAY)];
+      if (d) { rev30 += d.rev || 0; ok30 += d.ok || 0; conj30 += d.conj || 0; conjOk30 += d.conjOk || 0; if (i < 7) { rev7 += d.rev || 0; conj7 += d.conj || 0; } }
+    }
+    Object.keys(P.days).forEach(k => { total += activity(P.days[k]); if (activity(P.days[k]) > 0 && k > last) last = k; });
     const st8 = cards.map(cardStatus);
+    const cst = conjStats();
     return {
+      conjToday: (P.days[dayKey()] || {}).conj || 0, conj7, conjAcc30: conj30 ? Math.round(100 * conjOk30 / conj30) : 0,
+      conjMastered: cst.mastered,
       pid: profiles.active, name: P.name, v: 1, at: new Date().toISOString(), day: dayKey(),
       streak: streak(), today: (P.days[dayKey()] || {}).rev || 0, rev7, rev30,
+      todayAll: activity(P.days[dayKey()]),
       acc30: rev30 ? Math.round(100 * ok30 / rev30) : 0, total, last,
       learned: st8.filter(s => s !== 'new' && s !== 'known').length,
       mature: st8.filter(s => s === 'mature').length, known: st8.filter(s => s === 'known').length,
@@ -845,7 +1126,7 @@
     lastPush = Date.now();
     try {
       // nowy profil bez żadnej nauki nic nie wysyła (np. tuż po ponownej instalacji, przed przywróceniem kopii)
-      const share = P.settings.shareStats !== false && Object.keys(P.days).some(k => P.days[k].rev > 0);
+      const share = P.settings.shareStats !== false && Object.keys(P.days).some(k => activity(P.days[k]) > 0);
       const url = CONFIG.statsUrl + (CONFIG.statsUrl.includes('?') ? '&' : '?') +
         (share ? 'action=push&data=' + encodeURIComponent(JSON.stringify(statsSummary())) : 'action=get') + '&t=' + Date.now();
       const r = await fetch(url, { cache: 'no-store' });
@@ -865,6 +1146,7 @@
     // dane wysłane innego dnia: "dziś" = 0, a seria przepada, jeśli przerwa była dłuższa niż dzień
     const list = (board.profiles || []).filter(p => p && p.pid !== me.pid).map(p => Object.assign({}, p, {
       today: p.day === dayKey() ? p.today : 0,
+      conjToday: p.day === dayKey() ? (p.conjToday || 0) : 0,
       streak: (p.last || '') >= yesterday ? p.streak : 0
     }));
     if (P.settings.shareStats !== false && me.total > 0) list.push(me);
@@ -884,7 +1166,18 @@
           ${cols.map(([k]) => `<td class="${best[k] > 0 && p[k] === best[k] && list.length > 1 ? 'top' : ''}">${k === 'acc30' ? (p[k] || 0) + '%' : (p[k] || 0)}</td>`).join('')}</tr>`).join('')}
       </table>
       <p class="muted small" style="margin:6px 0 0">🔥 seria dni · dziś / 7 dni = liczba odpowiedzi · ✔% trafność (30 dni) · słowa = w nauce · 🏅 opanowane · <span class="top">pogrubione</span> = najlepszy wynik</p>
-      <p class="muted small" style="margin:12px 0 4px">Odpowiedzi w ostatnich 14 dniach</p>
+      ${list.some(p => p.conj7 || p.conjMastered || p.conjToday) ? (() => {
+        const cc = [['conjToday', 'dziś'], ['conj7', '7 dni'], ['conjAcc30', '✔%'], ['conjMastered', '🏅 formy']];
+        const cb = {}; cc.forEach(([k]) => { cb[k] = Math.max(...list.map(p => p[k] || 0)); });
+        return `<p class="small" style="margin:14px 0 0"><b>🔤 Odmiana czasowników</b></p>
+        <table class="board">
+          <tr><th></th>${cc.map(([, l]) => `<th>${l}</th>`).join('')}</tr>
+          ${list.map((p, i) => `<tr${p.pid === me.pid ? ' class="me"' : ''}><td><span class="sw" style="background:${colors[i % 4]}"></span>${esc(p.name)}</td>
+            ${cc.map(([k]) => `<td class="${cb[k] > 0 && (p[k] || 0) === cb[k] && list.length > 1 ? 'top' : ''}">${k === 'conjAcc30' ? (p[k] || 0) + '%' : (p[k] || 0)}</td>`).join('')}</tr>`).join('')}
+        </table>
+        <p class="muted small" style="margin:6px 0 0">dziś / 7 dni = liczba zadań · ✔% trafność (30 dni) · 🏅 opanowane formy (czasownik + czas)</p>`;
+      })() : ''}
+      <p class="muted small" style="margin:12px 0 4px">Odpowiedzi w ostatnich 14 dniach (fiszki)</p>
       <div class="bars" style="height:80px">${Array.from({ length: 14 }, (_, d) => `<div class="grp">${list.map((p, i) => `<div style="height:${Math.round(100 * ((p.days14 || [])[d] || 0) / mx)}%;background:${colors[i % 4]}" title="${esc(p.name)}: ${(p.days14 || [])[d] || 0}"></div>`).join('')}</div>`).join('')}</div>
       <div class="bars-labels">${Array.from({ length: 14 }, (_, d) => `<span>${d % 2 ? '' : dn[new Date(Date.now() - (13 - d) * SRS.DAY).getDay()]}</span>`).join('')}</div>
       <p class="muted small" style="margin-bottom:0">Aktualizacja: ${board.fetched ? new Date(board.fetched).toLocaleString('pl-PL') : '—'}
@@ -946,6 +1239,27 @@
         const pool = allCards().filter(c => !P.known[c.id] && DIRS.some(d => { const s = st(c.id, d); return s && s.st !== 'new'; }));
         startSession({ practice: pool, typingAll: true, title: 'Ćwiczenie: wpisywanie' }); break;
       }
+      case 'conj-setup': conjSetup(); break;
+      case 'conj-start': startConj(); break;
+      case 'conj-end': endConj(); break;
+      case 'conj-pick': answerConj(cs.cur.opts[Number(el.dataset.i)]); break;
+      case 'conj-check': answerConj($('#conjIn').value); break;
+      case 'conj-dontknow': answerConj(''); break;
+      case 'conj-next': nextConj(); break;
+      case 'conj-override': overrideConj(); break;
+      case 'mic':
+        if (cs && cs.cur && !cs.cur.shown) listen('es-ES', alts => answerConj(null, alts));
+        else if (session && session.cur && !session.cur.shown) {
+          const it = session.cur, c = session.cards[it.id], target = it.dir === 'es2pl' ? c.pl : c.es;
+          listen(it.dir === 'es2pl' ? 'pl-PL' : 'es-ES', alts => {
+            const best = alts.map(a => ({ a, r: checkTyped(a, target) })).sort((x, y) => RANK[y.r.kind] - RANK[x.r.kind])[0].a;
+            it.typedValue = best; it.heard = true; reveal(best);
+          });
+        }
+        break;
+      case 'acc-conj': { const ti = $('#conjIn'); const p = ti.selectionStart; ti.value = ti.value.slice(0, p) + el.dataset.ch + ti.value.slice(ti.selectionEnd); ti.focus(); ti.setSelectionRange(p + 1, p + 1); break; }
+      case 'conj-tables': conjTables(''); break;
+      case 'conj-table': conjTable(el.dataset.v); break;
       case 'sets': setPicker(); break;
       case 'set-open': setModal(el.dataset.key); break;
       case 'set-srs': closeModal(); startSession({ set: el.dataset.key, title: setLabel(el.dataset.key) }); break;
@@ -1044,6 +1358,12 @@
 
   // Klawiatura (komputer): spacja = pokaż, 1–4 = ocena
   document.addEventListener('keydown', e => {
+    if (cs && cs.cur && $('#modal').hidden && e.target.tagName !== 'INPUT') {
+      if (cs.cur.shown && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); nextConj(); }
+      else if (!cs.cur.shown && cs.cur.choice && /^[1-4]$/.test(e.key)) answerConj(cs.cur.opts[Number(e.key) - 1]);
+      else if (e.key === 'Escape') endConj();
+      return;
+    }
     if (!session || !session.cur || e.target.tagName === 'INPUT' || !$('#modal').hidden) return;
     if ((e.key === ' ' || e.key === 'Enter') && !session.cur.shown && !session.cur.typing) { e.preventDefault(); reveal(); }
     else if (session.cur.shown && /^[1-4]$/.test(e.key)) {

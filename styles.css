@@ -136,10 +136,25 @@ p { line-height: 1.45; }
   border: 1px solid var(--line); background: var(--bg); border-radius: 8px; min-width: 38px;
   padding: 6px 8px; font-size: 1.05rem; cursor: pointer;
 }
+.mic {
+  display: block; width: 100%; margin-top: 12px; padding: 12px; border-radius: 999px; cursor: pointer;
+  border: 2px solid var(--accent); background: transparent; color: var(--accent); font-weight: 700; font-size: 1rem;
+}
+.mic.listening { border-color: var(--again); color: var(--again); background: rgba(214, 69, 69, .08); animation: pulse 1.2s infinite; }
+@keyframes pulse { 50% { opacity: .55; } }
 .verdict { margin-top: 12px; font-weight: 700; }
 .verdict.ok { color: var(--good); } .verdict.bad { color: var(--again); } .verdict.meh { color: var(--hard); }
 .diff-you { text-decoration: line-through; color: var(--again); }
 
+.flash .person { margin-top: 14px; font-size: 1.15rem; font-weight: 700; color: var(--easy); }
+.choices { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 14px; }
+.choices button { border: 1px solid var(--line); background: var(--card); border-radius: 14px; padding: 14px 8px; font-size: 1rem; font-weight: 600; cursor: pointer; }
+.choices button small { color: var(--muted); font-weight: 400; margin-right: 4px; }
+.conj-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: .92rem; text-align: left; }
+.conj-table td { padding: 5px 8px; border-top: 1px solid var(--line); }
+.conj-table td:first-child { color: var(--muted); width: 45%; }
+.conj-table tr.cur td { background: var(--accent-soft); }
+.irr { font-weight: 800; color: var(--accent); }
 .done { text-align: center; padding: 30px 10px; }
 .done .emoji { font-size: 4rem; }
 
