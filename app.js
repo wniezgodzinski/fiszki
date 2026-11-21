@@ -38,7 +38,7 @@
   let shared = LS.get(K.shared, { cards: [] });
   let tab = 'home';
   let session = null;
-  const wf = { q: '', f: 'all', tag: '' };   // filtr listy słów
+  const wf = { q: '', f: 'all', set: '' };   // filtr listy słów
 
   function defaultProfile(name) {
     return {
@@ -81,9 +81,39 @@
   const STATUS_LABEL = { new: 'nowe', learn: 'w nauce', young: 'powtarzane', mature: 'opanowane', hard: 'trudne', known: 'znam' };
 
   // ---------- kolejka ----------
-  function buildQueue() {
+  // ---------- zestawy: lekcje, tematy, moje słowa ----------
+  // klucz: 'L:2026-11-21' (lekcja), 'T:czasowniki' (temat/tag), 'P:' (moje słowa)
+  function setTest(key) {
+    if (!key) return () => true;
+    const v = key.slice(2);
+    if (key[0] === 'L') return c => c.lesson === v;
+    if (key[0] === 'T') return c => (c.tags || []).includes(v);
+    if (key[0] === 'P') return c => c.src === 'priv';
+    return () => true;
+  }
+  function setLabel(key) {
+    if (!key) return 'Wszystkie';
+    if (key[0] === 'L') return 'Lekcja ' + key.slice(2);
+    if (key[0] === 'P') return 'Moje słowa';
+    return key.slice(2);
+  }
+  function allSets() {
+    const lessons = {}, tags = {}; let priv = 0;
+    allCards().forEach(c => {
+      if (c.lesson) lessons[c.lesson] = (lessons[c.lesson] || 0) + 1;
+      (c.tags || []).forEach(t => { tags[t] = (tags[t] || 0) + 1; });
+      if (c.src === 'priv') priv++;
+    });
+    return {
+      tags: Object.keys(tags).sort((a, b) => a.localeCompare(b, 'pl')).map(t => ({ key: 'T:' + t, label: t, n: tags[t] })),
+      lessons: Object.keys(lessons).sort().reverse().map(l => ({ key: 'L:' + l, label: l, n: lessons[l] })),
+      priv
+    };
+  }
+
+  function buildQueue(filter, extraNew) {
     const now = Date.now(), S = P.settings, learn = [], rev = [], fresh = { es2pl: [], pl2es: [] };
-    const cards = sortByLesson(allCards().filter(c => !P.known[c.id]));
+    const cards = sortByLesson(allCards().filter(c => !P.known[c.id] && (!filter || filter(c))));
     for (const c of cards) {
       for (const dir of DIRS) {
         if (!S[dir]) continue;
@@ -98,7 +128,7 @@
     }
     shuffle(rev); rev.length = Math.min(rev.length, S.maxReviews);
     const n = nt(), news = [];
-    for (const dir of DIRS) news.push(...fresh[dir].slice(0, Math.max(0, S.newPerDay - n[dir])));
+    for (const dir of DIRS) news.push(...fresh[dir].slice(0, extraNew || Math.max(0, S.newPerDay - n[dir])));
     return { learn, rev, news, freshTotal: fresh.es2pl.length + fresh.pl2es.length };
   }
   function mergeQueue(rev, news) {
@@ -167,9 +197,9 @@
     if (opts.practice) {
       mode = 'practice';
       const dirs = DIRS.filter(d => P.settings[d]);
-      queue = shuffle(opts.practice.slice()).slice(0, 20).map(c => ({ id: c.id, dir: dirs[Math.floor(Math.random() * dirs.length)] || 'es2pl' }));
+      queue = shuffle(opts.practice.slice()).slice(0, opts.limit || 20).map(c => ({ id: c.id, dir: dirs[Math.floor(Math.random() * dirs.length)] || 'es2pl' }));
     } else {
-      const q = buildQueue();
+      const q = buildQueue(opts.set ? setTest(opts.set) : null, opts.extraNew);
       queue = mergeQueue(q.rev, q.news);
       learnQ = q.learn;
     }
@@ -355,6 +385,7 @@
       </div>
       <button class="btn" data-act="start" ${due + q.news.length ? '' : 'disabled'}>${due + q.news.length ? 'Rozpocznij naukę' : '✔ Na dziś wszystko zrobione!'}</button>
       <button class="btn secondary" data-act="start-typing" ${due + q.news.length ? '' : 'disabled'}>⌨️ Ta sama nauka, ale z wpisywaniem</button>
+      <button class="btn ghost" data-act="sets" ${total ? '' : 'disabled'}>🏷️ Wybierz lekcję lub temat</button>
       <div class="panel">
         <b>Dodatkowe ćwiczenia</b>
         <p class="muted small" style="margin:4px 0 8px">Nie zmieniają harmonogramu powtórek – można ćwiczyć do woli.</p>
@@ -367,7 +398,7 @@
 
   function renderWords() {
     const cards = sortByLesson(allCards()).reverse();
-    const lessons = [...new Set(cards.map(c => c.lesson).filter(Boolean))].sort().reverse();
+    const sets = allSets(), inSet = setTest(wf.set);
     const q = norm(wf.q, false);
     const list = cards.filter(c => {
       const s = cardStatus(c);
@@ -375,7 +406,7 @@
       if (wf.f === 'priv' && c.src !== 'priv') return false;
       if (wf.f === 'known' && s !== 'known') return false;
       if (wf.f === 'hard' && s !== 'hard') return false;
-      if (wf.tag && c.lesson !== wf.tag) return false;
+      if (!inSet(c)) return false;
       if (q && !(norm(c.es, false).includes(q) || norm(c.pl, false).includes(q))) return false;
       return true;
     });
@@ -390,7 +421,10 @@
       <input id="wsearch" class="search" type="search" placeholder="Szukaj po hiszpańsku lub polsku…" value="${esc(wf.q)}">
       <div class="filters">
         ${chip('all', 'Wszystkie')}${chip('shared', 'Wspólne')}${chip('priv', 'Moje')}${chip('hard', 'Trudne')}${chip('known', 'Znane')}
-        <select id="wtag" class="chip"><option value="">Każda lekcja</option>${lessons.map(l => `<option ${wf.tag === l ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
+        <select id="wset" class="chip"><option value="">Każda lekcja / temat</option>
+          ${sets.tags.length ? `<optgroup label="Tematy">${sets.tags.map(x => `<option value="${esc(x.key)}" ${wf.set === x.key ? 'selected' : ''}>${esc(x.label)} (${x.n})</option>`).join('')}</optgroup>` : ''}
+          ${sets.lessons.length ? `<optgroup label="Lekcje">${sets.lessons.map(x => `<option value="${esc(x.key)}" ${wf.set === x.key ? 'selected' : ''}>${esc(x.label)} (${x.n})</option>`).join('')}</optgroup>` : ''}
+        </select>
       </div>
       <p class="muted small">${list.length} z ${cards.length} · <span class="dot" style="display:inline-block"></span> nowe
         <span class="dot learn" style="display:inline-block"></span> w nauce <span class="dot young" style="display:inline-block"></span> powtarzane
@@ -404,7 +438,38 @@
       }).join('')}</ul>`;
     const si = $('#wsearch');
     si.addEventListener('input', () => { wf.q = si.value; const pos = si.selectionStart; renderWords(); const n = $('#wsearch'); n.focus(); n.setSelectionRange(pos, pos); });
-    $('#wtag').addEventListener('change', e => { wf.tag = e.target.value; renderWords(); });
+    $('#wset').addEventListener('change', e => { wf.set = e.target.value; renderWords(); });
+  }
+
+  function setPicker() {
+    const s = allSets();
+    const chip = x => `<button class="chip" data-act="set-open" data-key="${esc(x.key)}">${esc(x.label)} <span class="muted">${x.n}</span></button>`;
+    openModal(`<h2>Wybierz zestaw</h2>
+      ${s.tags.length ? `<label>Tematy i źródła</label><div class="filters">${s.tags.map(chip).join('')}</div>` : ''}
+      ${s.lessons.length ? `<label>Lekcje (data)</label><div class="filters">${s.lessons.map(chip).join('')}</div>` : ''}
+      ${s.priv ? `<label>Prywatne</label><div class="filters">${chip({ key: 'P:', label: 'Moje słowa', n: s.priv })}</div>` : ''}
+      <button class="btn ghost" data-act="close">Zamknij</button>`);
+  }
+  function setModal(key) {
+    const test = setTest(key), cards = allCards().filter(test);
+    const q = buildQueue(test);
+    const due = q.rev.length + q.learn.length;
+    const known = cards.filter(c => P.known[c.id]).length;
+    const k = esc(key);
+    openModal(`<h2>🏷️ ${esc(setLabel(key))}</h2>
+      <div class="big-numbers">
+        <div><b>${cards.length}</b><span>słów</span></div>
+        <div><b>${due}</b><span>do powtórki</span></div>
+        <div><b>${q.news.length}</b><span>nowe dziś</span></div>
+      </div>
+      <p class="small muted" style="margin-top:0">Nowych w kolejce: ${q.freshTotal} · oznaczonych jako znane: ${known}</p>
+      <button class="btn" data-act="set-srs" data-key="${k}" ${due + q.news.length ? '' : 'disabled'}>Ucz się – powtórki i nowe z tego zestawu</button>
+      ${!q.news.length && q.freshTotal ? `<button class="btn secondary" data-act="set-more" data-key="${k}">+ Ucz się 10 nowych z tego zestawu (ponad dzienny limit)</button>` : ''}
+      <p class="small muted" style="margin:12px 0 0">Ćwiczenia bez wpływu na harmonogram (do 30 losowych słów):</p>
+      <button class="btn ghost" data-act="set-practice" data-key="${k}">🔁 Ćwicz swobodnie</button>
+      <button class="btn ghost" data-act="set-type" data-key="${k}">✍️ Ćwicz z wpisywaniem</button>
+      <button class="btn ghost" data-act="set-words" data-key="${k}">📚 Pokaż słowa</button>
+      <button class="btn ghost" data-act="sets">← Inne zestawy</button>`);
   }
 
   function fmtDue(s) {
@@ -600,7 +665,8 @@
           ${[[0, 'nigdy'], [10, '10%'], [20, '20%'], [35, '35%'], [50, '50%'], [100, 'zawsze']].map(([v, l]) => `<option value="${v}" ${S.typingShare == v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
         <div class="switch"><span>Automatycznie czytaj po hiszpańsku</span><input type="checkbox" data-set="autoSpeak" ${S.autoSpeak ? 'checked' : ''}></div>
         <div class="switch"><span>Maks. powtórek w sesji</span><input type="number" min="10" max="1000" data-set="maxReviews" value="${S.maxReviews}"></div>
-        <p class="muted small">PL → ES pojawia się dla słowa dopiero, gdy ES → PL jest już przyswojone.</p>
+        <p class="muted small">PL → ES pojawia się dla słowa dopiero, gdy ES → PL jest już przyswojone.<br>
+        🔊 Nie słychać głosu? Na iPhonie wyłącz tryb cichy i pogłośnij.</p>
       </div>
       <div class="panel">
         <b>Wspólna lista</b>
@@ -700,6 +766,18 @@
         const pool = allCards().filter(c => !P.known[c.id] && DIRS.some(d => { const s = st(c.id, d); return s && s.st !== 'new'; }));
         startSession({ practice: pool, typingAll: true, title: 'Ćwiczenie: wpisywanie' }); break;
       }
+      case 'sets': setPicker(); break;
+      case 'set-open': setModal(el.dataset.key); break;
+      case 'set-srs': closeModal(); startSession({ set: el.dataset.key, title: setLabel(el.dataset.key) }); break;
+      case 'set-more': closeModal(); startSession({ set: el.dataset.key, extraNew: 10, title: setLabel(el.dataset.key) }); break;
+      case 'set-practice':
+      case 'set-type': {
+        const key = el.dataset.key, pool = allCards().filter(setTest(key)).filter(c => !P.known[c.id]);
+        closeModal();
+        startSession({ practice: pool, limit: 30, typingAll: a === 'set-type', title: 'Ćwiczenie: ' + setLabel(key) });
+        break;
+      }
+      case 'set-words': closeModal(); wf.set = el.dataset.key; wf.f = 'all'; wf.q = ''; tab = 'words'; render(); window.scrollTo(0, 0); break;
       case 'end': endSession(); break;
       case 'reveal': if (!session.cur.typing) reveal(); break;
       case 'check': { const v = $('#typeIn').value; session.cur.typedValue = v; reveal(v); break; }
