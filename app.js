@@ -13,7 +13,7 @@
   const DIRS = ['es2pl', 'pl2es'];
   const DIR_LABEL = { es2pl: 'ES → PL', pl2es: 'PL → ES' };
   const HTTP = /^https?:$/.test(location.protocol);
-  const APP_VERSION = '11 (2026-11-21)';
+  const APP_VERSION = '13 (2026-11-21)';
 
   const uid = p => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -165,41 +165,65 @@
   const IOS = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
   let recActive = null;
   const RANK = { ok: 4, accent: 3, article: 2, typo: 1, bad: 0 };
+  // stan: false | 'prep' (mikrofon się uruchamia) | true (słucha)
   function setMicState(on, heard) {
     document.querySelectorAll('.mic').forEach(b => {
-      b.classList.toggle('listening', on);
-      b.textContent = on ? (heard ? '🔴 „' + heard + '” – stuknij, gdy gotowe' : '🔴 Słucham… (stuknij, by przerwać)') : '🎤 Powiedz';
+      b.classList.toggle('listening', on === true);
+      b.classList.toggle('prep', on === 'prep');
+      b.textContent = on === 'prep' ? '⏳ Chwileczkę… (mów, gdy zrobi się czerwony)'
+        : on ? (heard ? '🔴 „' + heard + '” – stuknij, gdy gotowe' : '🔴 Mów teraz…') : '🎤 Powiedz';
     });
   }
   let recTimers = [];
   const clearRecTimers = () => { recTimers.forEach(clearTimeout); recTimers = []; };
+  // Sposób uruchamiania mikrofonu (Safari na iPhonie bywa kapryśne):
+  //  'new'   – nowy obiekt rozpoznawania przy każdym słuchaniu (standard)
+  //  'reuse' – jeden obiekt używany wielokrotnie
+  //  'warm'  – przed słuchaniem krótkie „rozgrzanie” mikrofonu (getUserMedia)
+  const MIC_MODES = { new: 'standardowy', reuse: 'ten sam obiekt', warm: 'z rozgrzaniem mikrofonu' };
+  let recShared = null, recBusy = false;
+  const getRecognizer = mode => (mode === 'reuse' ? (recShared || (recShared = new SR())) : new SR());
+  function withMicMode(mode, go) {
+    const start = () => {
+      if (mode === 'reuse' && recBusy) {   // poprzednie słuchanie jeszcze się zamyka – poczekaj chwilę
+        let n = 0; const iv = setInterval(() => { if (!recBusy || ++n > 15) { clearInterval(iv); go(); } }, 100);
+      } else go();
+    };
+    if (mode === 'warm' && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(s => { s.getTracks().forEach(t => t.stop()); setTimeout(start, 150); })
+        .catch(() => start());
+    } else start();
+  }
   function stopListening() {
     clearRecTimers();
-    if (recActive) { const r = recActive; recActive = null; r._done = true; try { r.abort(); } catch (e) { /* */ } }
+    if (recActive) recActive.abort();
     setMicState(false);
   }
   // lang: 'es-ES' albo 'pl-PL'; onText dostaje kilka wariantów tego, co usłyszano.
-  // Wyniki zbierane na bieżąco (Safari na iPhonie często nie zwraca wyniku końcowego) –
+  // Tryb pojedynczy (na iPhonie tryb ciągły kończy się błędem „Corrupt”). Wyniki zbierane na bieżąco –
   // po ~1,2 s ciszy od ostatnio rozpoznanego słowa słuchanie kończy się samo.
   function listen(lang, onText) {
     if (!SR) { toast('Ta przeglądarka nie obsługuje rozpoznawania mowy'); return; }
-    if (recActive) { if (recActive._finish) recActive._finish(); else stopListening(); return; }   // ponowne stuknięcie = „gotowe”
+    if (recActive) { recActive.finish(); return; }   // ponowne stuknięcie = „gotowe”
     if ('speechSynthesis' in window) speechSynthesis.cancel();
-    const rec = new SR();
-    // iPhone: tryb ciągły (Safari często nie zwraca tekstu w trybie pojedynczym); sami kończymy po ciszy
-    rec.lang = lang; rec.interimResults = true; rec.maxAlternatives = 3; rec.continuous = IOS || P.settings.micContinuous === true;
-    let alts = [];
+    const mode = P.settings.micMode || 'new';
+    const sess = { done: false, ready: false, alts: [] };
+    let rec;
+    try { rec = getRecognizer(mode); } catch (e) { toast('Nie udało się włączyć mikrofonu'); return; }
+    const close = () => { sess.done = true; clearRecTimers(); recActive = null; setMicState(false); };
     const finish = () => {
-      if (rec._done) return;
-      rec._done = true; clearRecTimers();
+      if (sess.done) return;
+      close();
       try { rec.stop(); } catch (e) { /* */ }
-      recActive = null; setMicState(false);
-      if (alts.length) onText(alts);
-      else toast('Nic nie usłyszałem – spróbuj jeszcze raz', 3000);
+      if (sess.alts.length) onText(sess.alts);
+      else toast(sess.ready ? 'Nic nie usłyszałem – spróbuj jeszcze raz' : 'Mikrofon nie ruszył – spróbuj jeszcze raz lub zmień sposób w Ustawieniach', 3500);
     };
-    rec._finish = finish;
+    const abort = () => { if (sess.done) return; close(); try { rec.abort(); } catch (e) { /* */ } };
+    recActive = { finish, abort };
+    rec.lang = lang; rec.interimResults = true; rec.maxAlternatives = 3; rec.continuous = false;
     rec.onresult = e => {
-      if (rec._done) return;
+      if (sess.done) return;
       // złóż tekst ze wszystkich fragmentów; warianty z ostatniego fragmentu
       let text = '', isFinal = false;
       for (let i = 0; i < e.results.length; i++) { text += e.results[i][0].transcript; if (e.results[i].isFinal) isFinal = true; }
@@ -207,55 +231,73 @@
       const last = e.results[e.results.length - 1], prefix = text.slice(0, text.length - String(last[0].transcript).trim().length);
       const list = [text];
       for (let j = 1; j < (last.length || 0); j++) list.push((prefix + last[j].transcript).trim());
-      alts = [...new Set(list.filter(Boolean))];
+      sess.alts = [...new Set(list.filter(Boolean))];
+      sess.ready = true;
       setMicState(true, text);
       clearRecTimers();
       if (isFinal) finish();
       else recTimers.push(setTimeout(finish, 1200));
     };
     rec.onerror = e => {
-      if (rec._done) return;
+      if (sess.done) return;
       if (e.error === 'no-speech' || e.error === 'aborted') { finish(); return; }
-      rec._done = true; clearRecTimers(); recActive = null; setMicState(false);
+      close();
       const m = { 'not-allowed': 'Brak zgody na mikrofon lub wyłączone dyktowanie – sprawdź ustawienia', 'service-not-allowed': 'Rozpoznawanie mowy jest tu niedostępne – spróbuj w Safari/Chrome',
         network: 'Rozpoznawanie mowy wymaga internetu', 'audio-capture': 'Brak dostępu do mikrofonu' }[e.error];
       toast(m || ('Błąd rozpoznawania mowy: ' + e.error), 3500);
     };
-    rec.onend = () => { if (!rec._done) finish(); };
-    try {
-      rec.start(); recActive = rec; setMicState(true);
-      recTimers.push(setTimeout(finish, 8000));   // bezpiecznik: maks. 8 s słuchania
-    } catch (e) { toast('Nie udało się włączyć mikrofonu'); }
+    rec.onend = () => { recBusy = false; if (!sess.done) finish(); };
+    // iPhone zaczyna słuchać dopiero po 1–2 s – „Mów teraz” pokazujemy, gdy mikrofon jest naprawdę gotowy
+    const onReady = () => {
+      if (sess.ready || sess.done) return; sess.ready = true;
+      setMicState(true);
+      recTimers.push(setTimeout(finish, 7000));   // bezpiecznik: maks. 7 s słuchania od gotowości
+    };
+    rec.onaudiostart = onReady;
+    rec.onspeechstart = onReady;
+    rec.onstart = null; rec.onsoundstart = null; rec.onspeechend = null; rec.onsoundend = null; rec.onaudioend = null; rec.onnomatch = null;
+    setMicState('prep');
+    withMicMode(mode, () => {
+      if (sess.done) return;
+      try {
+        rec.start(); recBusy = true;
+        recTimers.push(setTimeout(() => { if (!sess.ready) finish(); }, 6000));   // mikrofon nie ruszył
+      } catch (e) { close(); toast('Nie udało się włączyć mikrofonu: ' + e.message, 3500); }
+    });
   }
   const micBtn = () => (SR ? `<button type="button" class="mic" data-act="mic">🎤 Powiedz</button>` : '');
 
   // ---------- test mikrofonu (diagnostyka) ----------
   let micTest = null;
+  const micTestCount = {};
   function micTestModal() {
     openModal(`<h2>🎤 Test mikrofonu</h2>
-      <p class="small muted" style="margin-top:0">Stuknij test i powiedz po hiszpańsku np. „vamos a la playa”. Po 8 s test się zakończy.
-      Zrób zrzut ekranu dziennika i wyślij go, jeśli coś nie działa.</p>
+      <p class="small muted" style="margin-top:0">Każdy sposób przetestuj <b>3 razy pod rząd</b>: stuknij, poczekaj aż pojawi się „audiostart”,
+      powiedz np. „vamos a la playa”. Sposób, który zadziała za każdym razem, ustaw poniżej w „Sposób włączania mikrofonu”.</p>
       <p class="small">Przeglądarka: ${esc(navigator.userAgent.replace(/^Mozilla\/5\.0 /, '').slice(0, 120))}<br>
       Rozpoznawanie mowy: <b>${window.SpeechRecognition ? 'SpeechRecognition' : window.webkitSpeechRecognition ? 'webkitSpeechRecognition' : 'brak'}</b> ·
       tryb aplikacji: <b>${window.matchMedia('(display-mode: standalone)').matches || navigator.standalone ? 'z ekranu głównego' : 'przeglądarka'}</b></p>
-      <div class="row">
-        <button class="btn inline" data-act="mictest" data-cont="1">Test A (ciągły)</button>
-        <button class="btn inline secondary" data-act="mictest" data-cont="0">Test B (pojedynczy)</button>
+      <div class="row" style="flex-wrap:wrap">
+        ${Object.keys(MIC_MODES).map((m, i) => `<button class="btn inline ${i ? 'secondary' : ''}" data-act="mictest" data-mode="${m}">${i + 1}: ${MIC_MODES[m]}</button>`).join('')}
       </div>
       <pre id="micLog" class="miclog">—</pre>
+      <div class="switch"><span>Sposób włączania mikrofonu</span><select id="micModeSel">
+        ${Object.keys(MIC_MODES).map(m => `<option value="${m}" ${(P.settings.micMode || 'new') === m ? 'selected' : ''}>${MIC_MODES[m]}</option>`).join('')}</select></div>
       <button class="btn ghost" data-act="mictest-close">Zamknij</button>`);
+    $('#micModeSel').addEventListener('change', e => { P.settings.micMode = e.target.value; saveP(); toast('Ustawiono: ' + MIC_MODES[e.target.value]); });
   }
-  function runMicTest(continuous) {
+  function runMicTest(mode) {
     const logEl = $('#micLog');
     const t0 = Date.now();
     const log = s => { logEl.textContent += `\n${((Date.now() - t0) / 1000).toFixed(1)}s ${s}`; logEl.scrollTop = logEl.scrollHeight; };
     if (micTest) { try { micTest.abort(); } catch (e) { /* */ } micTest = null; }
-    logEl.textContent = `Test ${continuous ? 'A (ciągły)' : 'B (pojedynczy)'} · es-ES`;
+    micTestCount[mode] = (micTestCount[mode] || 0) + 1;
+    logEl.textContent = `Sposób: ${MIC_MODES[mode]} · próba #${micTestCount[mode]} · es-ES`;
     if (!SR) { log('BRAK obsługi rozpoznawania mowy'); return; }
     if ('speechSynthesis' in window) speechSynthesis.cancel();
     let rec;
-    try { rec = new SR(); } catch (e) { log('błąd tworzenia: ' + e.message); return; }
-    rec.lang = 'es-ES'; rec.interimResults = true; rec.continuous = continuous; rec.maxAlternatives = 3;
+    try { rec = getRecognizer(mode); } catch (e) { log('błąd tworzenia: ' + e.message); return; }
+    rec.lang = 'es-ES'; rec.interimResults = true; rec.continuous = false; rec.maxAlternatives = 3;
     ['start', 'audiostart', 'soundstart', 'speechstart', 'speechend', 'soundend', 'audioend', 'nomatch']
       .forEach(ev => { rec['on' + ev] = () => log(ev); });
     rec.onresult = e => {
@@ -264,10 +306,14 @@
       log('result: ' + parts.join(' | '));
     };
     rec.onerror = e => log('ERROR: ' + e.error + (e.message ? ' – ' + e.message : ''));
-    rec.onend = () => { log('end'); if (micTest === rec) micTest = null; };
-    try { rec.start(); micTest = rec; log('start() wywołane'); } catch (e) { log('start() wyjątek: ' + e.message); return; }
-    setTimeout(() => { if (micTest === rec) { log('stop() po 8 s'); try { rec.stop(); } catch (e) { log('stop() wyjątek: ' + e.message); } } }, 8000);
+    rec.onend = () => { recBusy = false; log('end'); if (micTest === rec) micTest = null; };
+    if (mode === 'warm') log('rozgrzewanie mikrofonu…');
+    withMicMode(mode, () => {
+      try { rec.start(); recBusy = true; micTest = rec; log('start() wywołane'); } catch (e) { log('start() wyjątek: ' + e.message); return; }
+      setTimeout(() => { if (micTest === rec) { log('stop() po 8 s'); try { rec.stop(); } catch (e) { log('stop() wyjątek: ' + e.message); } } }, 8000);
+    });
   }
+
 
   // ---------- sprawdzanie wpisanej odpowiedzi ----------
   function norm(s, keepAccents) {
@@ -1328,7 +1374,7 @@
       case 'conj-next': nextConj(); break;
       case 'conj-override': overrideConj(); break;
       case 'mictest-open': micTestModal(); break;
-      case 'mictest': runMicTest(el.dataset.cont === '1'); break;
+      case 'mictest': runMicTest(el.dataset.mode); break;
       case 'mictest-close': if (micTest) { try { micTest.abort(); } catch (err) { /* */ } micTest = null; } closeModal(); break;
       case 'mic':
         if (cs && cs.cur && !cs.cur.shown) listen('es-ES', alts => answerConj(null, alts));
