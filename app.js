@@ -13,7 +13,7 @@
   const DIRS = ['es2pl', 'pl2es'];
   const DIR_LABEL = { es2pl: 'ES → PL', pl2es: 'PL → ES' };
   const HTTP = /^https?:$/.test(location.protocol);
-  const APP_VERSION = '13 (2026-11-21)';
+  const APP_VERSION = '14 (2026-11-21)';
 
   const uid = p => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -180,9 +180,32 @@
   //  'new'   – nowy obiekt rozpoznawania przy każdym słuchaniu (standard)
   //  'reuse' – jeden obiekt używany wielokrotnie
   //  'warm'  – przed słuchaniem krótkie „rozgrzanie” mikrofonu (getUserMedia)
-  const MIC_MODES = { new: 'standardowy', reuse: 'ten sam obiekt', warm: 'z rozgrzaniem mikrofonu' };
+  //  'frame' – rozpoznawanie tworzone w świeżo załadowanej, niewidocznej ramce (po każdym użyciu nowa ramka)
+  const MIC_MODES = { frame: 'w świeżej ramce', new: 'standardowy', reuse: 'ten sam obiekt', warm: 'z rozgrzaniem mikrofonu' };
+  const micMode = () => P.settings.micMode || (IOS ? 'frame' : 'new');
   let recShared = null, recBusy = false;
-  const getRecognizer = mode => (mode === 'reuse' ? (recShared || (recShared = new SR())) : new SR());
+  const frameMic = { el: null, ready: false };
+  function prepFrame() {
+    if (frameMic.el) frameMic.el.remove();
+    frameMic.ready = false;
+    const f = document.createElement('iframe');
+    f.src = 'mic.html?r=' + Date.now();
+    f.setAttribute('allow', 'microphone');
+    f.setAttribute('aria-hidden', 'true');
+    f.style.cssText = 'position:fixed;left:-10px;top:-10px;width:1px;height:1px;opacity:0;border:0;pointer-events:none';
+    f.onload = () => { if (frameMic.el === f) frameMic.ready = true; };
+    document.body.appendChild(f);
+    frameMic.el = f;
+  }
+  const renewFrame = () => { if (micMode() === 'frame' || frameMic.el) setTimeout(prepFrame, 300); };
+  function getRecognizer(mode) {
+    if (mode === 'reuse') return recShared || (recShared = new SR());
+    if (mode === 'frame' && frameMic.ready && frameMic.el && frameMic.el.contentWindow) {
+      const W = frameMic.el.contentWindow, C = W.SpeechRecognition || W.webkitSpeechRecognition;
+      if (C) { const r = new C(); r._frame = true; return r; }
+    }
+    return new SR();
+  }
   function withMicMode(mode, go) {
     const start = () => {
       if (mode === 'reuse' && recBusy) {   // poprzednie słuchanie jeszcze się zamyka – poczekaj chwilę
@@ -207,11 +230,11 @@
     if (!SR) { toast('Ta przeglądarka nie obsługuje rozpoznawania mowy'); return; }
     if (recActive) { recActive.finish(); return; }   // ponowne stuknięcie = „gotowe”
     if ('speechSynthesis' in window) speechSynthesis.cancel();
-    const mode = P.settings.micMode || 'new';
+    const mode = micMode();
     const sess = { done: false, ready: false, alts: [] };
     let rec;
     try { rec = getRecognizer(mode); } catch (e) { toast('Nie udało się włączyć mikrofonu'); return; }
-    const close = () => { sess.done = true; clearRecTimers(); recActive = null; setMicState(false); };
+    const close = () => { sess.done = true; clearRecTimers(); recActive = null; setMicState(false); if (mode === 'frame') renewFrame(); };
     const finish = () => {
       if (sess.done) return;
       close();
@@ -282,9 +305,13 @@
       </div>
       <pre id="micLog" class="miclog">—</pre>
       <div class="switch"><span>Sposób włączania mikrofonu</span><select id="micModeSel">
-        ${Object.keys(MIC_MODES).map(m => `<option value="${m}" ${(P.settings.micMode || 'new') === m ? 'selected' : ''}>${MIC_MODES[m]}</option>`).join('')}</select></div>
+        ${Object.keys(MIC_MODES).map(m => `<option value="${m}" ${micMode() === m ? 'selected' : ''}>${MIC_MODES[m]}</option>`).join('')}</select></div>
       <button class="btn ghost" data-act="mictest-close">Zamknij</button>`);
-    $('#micModeSel').addEventListener('change', e => { P.settings.micMode = e.target.value; saveP(); toast('Ustawiono: ' + MIC_MODES[e.target.value]); });
+    $('#micModeSel').addEventListener('change', e => {
+      P.settings.micMode = e.target.value; saveP(); toast('Ustawiono: ' + MIC_MODES[e.target.value]);
+      if (e.target.value === 'frame' && !frameMic.el) prepFrame();
+    });
+    if (!frameMic.el) prepFrame();
   }
   function runMicTest(mode) {
     const logEl = $('#micLog');
@@ -297,6 +324,7 @@
     if ('speechSynthesis' in window) speechSynthesis.cancel();
     let rec;
     try { rec = getRecognizer(mode); } catch (e) { log('błąd tworzenia: ' + e.message); return; }
+    if (mode === 'frame') log(rec._frame ? 'rozpoznawanie w świeżej ramce' : 'ramka jeszcze niegotowa – zwykły tryb');
     rec.lang = 'es-ES'; rec.interimResults = true; rec.continuous = false; rec.maxAlternatives = 3;
     ['start', 'audiostart', 'soundstart', 'speechstart', 'speechend', 'soundend', 'audioend', 'nomatch']
       .forEach(ev => { rec['on' + ev] = () => log(ev); });
@@ -306,7 +334,7 @@
       log('result: ' + parts.join(' | '));
     };
     rec.onerror = e => log('ERROR: ' + e.error + (e.message ? ' – ' + e.message : ''));
-    rec.onend = () => { recBusy = false; log('end'); if (micTest === rec) micTest = null; };
+    rec.onend = () => { recBusy = false; log('end'); if (micTest === rec) micTest = null; if (mode === 'frame') renewFrame(); };
     if (mode === 'warm') log('rozgrzewanie mikrofonu…');
     withMicMode(mode, () => {
       try { rec.start(); recBusy = true; micTest = rec; log('start() wywołane'); } catch (e) { log('start() wyjątek: ' + e.message); return; }
@@ -1525,6 +1553,7 @@
     render();
     if (profiles.list.length > 1) profilePicker();
     syncShared(false).then(() => syncStats(true));
+    if (SR && micMode() === 'frame') prepFrame();   // ramka dla mikrofonu gotowa zawczasu
   }
   function render0() { view.innerHTML = '<p class="muted">Ładowanie…</p>'; }
   boot();
