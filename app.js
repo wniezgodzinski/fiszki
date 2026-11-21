@@ -13,7 +13,7 @@
   const DIRS = ['es2pl', 'pl2es'];
   const DIR_LABEL = { es2pl: 'ES → PL', pl2es: 'PL → ES' };
   const HTTP = /^https?:$/.test(location.protocol);
-  const APP_VERSION = '9 (2026-11-21)';
+  const APP_VERSION = '10 (2026-11-21)';
 
   const uid = p => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -164,29 +164,66 @@
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   let recActive = null;
   const RANK = { ok: 4, accent: 3, article: 2, typo: 1, bad: 0 };
-  function setMicState(on) {
-    document.querySelectorAll('.mic').forEach(b => { b.classList.toggle('listening', on); b.textContent = on ? '🔴 Słucham… (stuknij, by przerwać)' : '🎤 Powiedz'; });
+  function setMicState(on, heard) {
+    document.querySelectorAll('.mic').forEach(b => {
+      b.classList.toggle('listening', on);
+      b.textContent = on ? (heard ? '🔴 „' + heard + '” – stuknij, gdy gotowe' : '🔴 Słucham… (stuknij, by przerwać)') : '🎤 Powiedz';
+    });
   }
-  function stopListening() { if (recActive) { try { recActive.abort(); } catch (e) { /* */ } recActive = null; } setMicState(false); }
-  // lang: 'es-ES' albo 'pl-PL'; onText dostaje kilka wariantów tego, co usłyszano
+  let recTimers = [];
+  const clearRecTimers = () => { recTimers.forEach(clearTimeout); recTimers = []; };
+  function stopListening() {
+    clearRecTimers();
+    if (recActive) { const r = recActive; recActive = null; r._done = true; try { r.abort(); } catch (e) { /* */ } }
+    setMicState(false);
+  }
+  // lang: 'es-ES' albo 'pl-PL'; onText dostaje kilka wariantów tego, co usłyszano.
+  // Wyniki zbierane na bieżąco (Safari na iPhonie często nie zwraca wyniku końcowego) –
+  // po ~1,2 s ciszy od ostatnio rozpoznanego słowa słuchanie kończy się samo.
   function listen(lang, onText) {
     if (!SR) { toast('Ta przeglądarka nie obsługuje rozpoznawania mowy'); return; }
-    if (recActive) { stopListening(); return; }
+    if (recActive) { if (recActive._finish) recActive._finish(); else stopListening(); return; }   // ponowne stuknięcie = „gotowe”
     if ('speechSynthesis' in window) speechSynthesis.cancel();
     const rec = new SR();
-    rec.lang = lang; rec.interimResults = false; rec.maxAlternatives = 5; rec.continuous = false;
-    rec.onresult = e => {
-      const r = e.results[0], alts = [];
-      for (let i = 0; i < r.length; i++) if (r[i].transcript.trim()) alts.push(r[i].transcript.trim());
+    rec.lang = lang; rec.interimResults = true; rec.maxAlternatives = 3; rec.continuous = false;
+    let alts = [];
+    const finish = () => {
+      if (rec._done) return;
+      rec._done = true; clearRecTimers();
+      try { rec.stop(); } catch (e) { /* */ }
+      recActive = null; setMicState(false);
       if (alts.length) onText(alts);
+      else toast('Nic nie usłyszałem – spróbuj jeszcze raz', 3000);
+    };
+    rec._finish = finish;
+    rec.onresult = e => {
+      if (rec._done) return;
+      // złóż tekst ze wszystkich fragmentów; warianty z ostatniego fragmentu
+      let text = '', isFinal = false;
+      for (let i = 0; i < e.results.length; i++) { text += e.results[i][0].transcript; if (e.results[i].isFinal) isFinal = true; }
+      text = text.trim();
+      const last = e.results[e.results.length - 1], prefix = text.slice(0, text.length - String(last[0].transcript).trim().length);
+      const list = [text];
+      for (let j = 1; j < (last.length || 0); j++) list.push((prefix + last[j].transcript).trim());
+      alts = [...new Set(list.filter(Boolean))];
+      setMicState(true, text);
+      clearRecTimers();
+      if (isFinal) finish();
+      else recTimers.push(setTimeout(finish, 1200));
     };
     rec.onerror = e => {
-      const m = { 'not-allowed': 'Brak zgody na mikrofon – zezwól w ustawieniach', 'service-not-allowed': 'Rozpoznawanie mowy jest tu niedostępne – spróbuj w Safari/Chrome',
-        'no-speech': 'Nic nie usłyszałem – spróbuj jeszcze raz', network: 'Rozpoznawanie mowy wymaga internetu', 'audio-capture': 'Brak dostępu do mikrofonu', aborted: '' }[e.error];
-      if (m !== '') toast(m || ('Błąd rozpoznawania mowy: ' + e.error), 3500);
+      if (rec._done) return;
+      if (e.error === 'no-speech' || e.error === 'aborted') { finish(); return; }
+      rec._done = true; clearRecTimers(); recActive = null; setMicState(false);
+      const m = { 'not-allowed': 'Brak zgody na mikrofon lub wyłączone dyktowanie – sprawdź ustawienia', 'service-not-allowed': 'Rozpoznawanie mowy jest tu niedostępne – spróbuj w Safari/Chrome',
+        network: 'Rozpoznawanie mowy wymaga internetu', 'audio-capture': 'Brak dostępu do mikrofonu' }[e.error];
+      toast(m || ('Błąd rozpoznawania mowy: ' + e.error), 3500);
     };
-    rec.onend = () => { recActive = null; setMicState(false); };
-    try { rec.start(); recActive = rec; setMicState(true); } catch (e) { toast('Nie udało się włączyć mikrofonu'); }
+    rec.onend = () => { if (!rec._done) finish(); };
+    try {
+      rec.start(); recActive = rec; setMicState(true);
+      recTimers.push(setTimeout(finish, 8000));   // bezpiecznik: maks. 8 s słuchania
+    } catch (e) { toast('Nie udało się włączyć mikrofonu'); }
   }
   const micBtn = () => (SR ? `<button type="button" class="mic" data-act="mic">🎤 Powiedz</button>` : '');
 
