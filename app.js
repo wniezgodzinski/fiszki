@@ -550,16 +550,26 @@
 
   // ---------- edytor wspólnej listy ----------
   function sharedEditor() {
+    const sheet = !!CONFIG.sheetCsvUrl;
+    const intro = sheet
+      ? `Lista jest w <b>Arkuszu Google</b>. Wklej tu słowa, a aplikacja przygotuje wiersze bez duplikatów –
+         skopiuj je i wklej w arkuszu w <b>kolumnie A, w pierwszym pustym wierszu</b>. Kolumnę „id” zostaw pustą.`
+      : `Tworzy nowy plik <b>words.json</b> = obecna lista (${(shared.cards || []).length} słów) + nowe słowa.
+         Pobrany plik wgraj do repozytorium na GitHubie (instrukcja w pliku INSTRUKCJA.md).`;
+    const buttons = sheet
+      ? `<button class="btn" data-act="sheet-copy">📋 Kopiuj wiersze do arkusza</button>
+         ${CONFIG.sheetEditUrl ? `<a class="btn secondary" style="text-align:center;text-decoration:none" href="${esc(CONFIG.sheetEditUrl)}" target="_blank" rel="noopener">Otwórz arkusz</a>` : ''}
+         <textarea id="shOut" readonly hidden style="min-height:90px"></textarea>`
+      : `<button class="btn" data-act="shared-download">Pobierz nowy words.json</button>`;
     openModal(`<h2>Edytor wspólnej listy</h2>
-      <p class="small">Tworzy nowy plik <b>words.json</b> = obecna lista (${(shared.cards || []).length} słów) + nowe słowa.
-      Pobrany plik wgraj do repozytorium na GitHubie (instrukcja w pliku INSTRUKCJA.md). Po chwili oba telefony same pobiorą nowe słowa.</p>
+      <p class="small">${intro}</p>
       <div class="row"><div><label>Data lekcji</label><input type="date" id="shLesson" value="${todayISO()}"></div>
       <div><label>Temat / tag (opcjonalnie)</label><input type="text" id="shTag" placeholder="np. restauracja"></div></div>
       <label>Nowe słowa</label>${FORMAT_HELP}
       <textarea id="shText"></textarea>
       <div id="shPrev"></div>
-      <button class="btn" data-act="shared-download">Pobierz nowy words.json</button>
-      <button class="btn ghost" data-act="close">Anuluj</button>`);
+      ${buttons}
+      <button class="btn ghost" data-act="close">Zamknij</button>`);
     const ta = $('#shText');
     ta.addEventListener('input', () => { $('#shPrev').innerHTML = previewTable(markDups(parseLines(ta.value), shared.cards || [])); });
   }
@@ -670,9 +680,10 @@
       </div>
       <div class="panel">
         <b>Wspólna lista</b>
-        <p class="small">${(shared.cards || []).length} słów · ostatnie pobranie: ${esc(upd)}${shared.updated ? ' · wersja z ' + esc(String(shared.updated).slice(0, 10)) : ''}</p>
+        <p class="small">${(shared.cards || []).length} słów · źródło: ${shared.source === 'sheet' ? 'Arkusz Google' : 'plik words.json'} · ostatnie pobranie: ${esc(upd)}</p>
         <button class="btn inline secondary" data-act="sync">↻ Sprawdź nowe słowa</button>
         <button class="btn inline ghost" data-act="shared-editor">Edytor wspólnej listy</button>
+        ${CONFIG.sheetEditUrl ? `<a class="btn inline ghost" style="text-decoration:none" href="${esc(CONFIG.sheetEditUrl)}" target="_blank" rel="noopener">📄 Otwórz arkusz</a>` : ''}
       </div>
       <div class="panel">
         <b>Kopia zapasowa</b>
@@ -732,19 +743,97 @@
     fresh.forEach(c => { P.seen[c.id] = 1; }); saveP();
     toast(`Nowe słowa ze wspólnej listy: ${fresh.length} 🎉`, 3500);
   }
+  // ---------- źródło wspólnej listy: Arkusz Google (CSV) albo words.json ----------
+  let CONFIG = LS.get('fisz.v1.config', {});
+  async function loadConfig() {
+    try {
+      const r = await fetch('config.json?t=' + Date.now(), { cache: 'no-store' });
+      if (r.ok) { CONFIG = await r.json(); LS.set('fisz.v1.config', CONFIG); }
+    } catch (e) { /* offline – zostaje zapamiętana konfiguracja */ }
+  }
+  function parseCSV(text) {
+    const rows = []; let row = [], f = '', q = false;
+    text = text.replace(/^﻿/, '');
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (q) {
+        if (ch === '"') { if (text[i + 1] === '"') { f += '"'; i++; } else q = false; }
+        else f += ch;
+      } else if (ch === '"') q = true;
+      else if (ch === ',') { row.push(f); f = ''; }
+      else if (ch === '\n' || ch === '\r') {
+        if (ch === '\r' && text[i + 1] === '\n') i++;
+        row.push(f); rows.push(row); row = []; f = '';
+      } else f += ch;
+    }
+    if (f !== '' || row.length) { row.push(f); rows.push(row); }
+    return rows;
+  }
+  function normDate(s) {
+    s = String(s || '').trim();
+    let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if (m) return m[1] + '-' + pad(m[2]) + '-' + pad(m[3]);
+    m = s.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})/);
+    if (m) return m[3] + '-' + pad(m[2]) + '-' + pad(m[1]);
+    return s;
+  }
+  function autoId(es) {
+    // stały identyfikator z tekstu hiszpańskiego (FNV-1a) – taki sam na każdym telefonie
+    let h = 0x811c9dc5; const s = dupKey(es);
+    for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+    return 'g' + h.toString(36);
+  }
+  function parseSheet(text) {
+    const rows = parseCSV(text).filter(r => r.some(x => x.trim()));
+    if (!rows.length) throw new Error('pusty arkusz');
+    const hn = rows[0].map(h => h.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/ł/g, 'l').trim());
+    const col = names => hn.findIndex(h => names.some(n => h === n || h.startsWith(n)));
+    const ix = { id: col(['id']), es: col(['hiszpanski', 'es', 'espanol']), pl: col(['polski', 'pl']),
+      ex: col(['przyklad', 'ex']), tags: col(['tagi', 'tags', 'temat']), lesson: col(['lekcja', 'lesson', 'data']) };
+    if (ix.es < 0 || ix.pl < 0) throw new Error('brak kolumn „hiszpański” i „polski” w pierwszym wierszu');
+    const get = (r, k) => (ix[k] >= 0 && r[ix[k]] != null ? String(r[ix[k]]).trim() : '');
+    const seen = new Set(), cards = [];
+    rows.slice(1).forEach(r => {
+      const es = get(r, 'es'), pl = get(r, 'pl');
+      if (!es || !pl) return;
+      const id = get(r, 'id') || autoId(es);
+      if (seen.has(id)) return; seen.add(id);
+      cards.push({ id, es, pl, ex: get(r, 'ex'), tags: get(r, 'tags').split(/[,;]/).map(t => t.trim()).filter(Boolean), lesson: normDate(get(r, 'lesson')) });
+    });
+    return cards;
+  }
+  async function fetchJsonList() {
+    const r = await fetch('words.json?t=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) throw new Error(r.status);
+    const d = await r.json();
+    if (!Array.isArray(d.cards)) throw new Error('format');
+    return { cards: d.cards.filter(c => c && c.id && c.es), updated: d.updated || '', source: 'json' };
+  }
   async function syncShared(manual) {
     if (!HTTP) { if (manual) toast('Wspólna lista działa po uruchomieniu z adresu internetowego'); return; }
-    try {
-      const r = await fetch('words.json?t=' + Date.now(), { cache: 'no-store' });
-      if (!r.ok) throw new Error(r.status);
-      const d = await r.json();
-      if (!Array.isArray(d.cards)) throw new Error('format');
-      shared = { updated: d.updated || '', cards: d.cards.filter(c => c && c.id && c.es), fetched: Date.now() };
+    await loadConfig();
+    let res = null, err = '';
+    if (CONFIG.sheetCsvUrl) {
+      try {
+        const u = CONFIG.sheetCsvUrl;
+        const r = await fetch(u + (u.includes('?') ? '&' : '?') + 't=' + Date.now(), { cache: 'no-store' });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const cards = parseSheet(await r.text());
+        if (!cards.length) throw new Error('arkusz bez słów');
+        res = { cards, updated: '', source: 'sheet' };
+      } catch (e) { err = String(e.message || e); }
+      // arkusz niedostępny: zostaje ostatnia pobrana lista; words.json tylko gdy nie ma nic
+      if (!res && !(shared.cards || []).length) { try { res = await fetchJsonList(); } catch (e) { /* */ } }
+    } else {
+      try { res = await fetchJsonList(); } catch (e) { err = String(e.message || e); }
+    }
+    if (res) {
+      shared = { updated: res.updated, cards: res.cards, fetched: Date.now(), source: res.source };
       LS.set(K.shared, shared);
-      if (manual) toast(`Wspólna lista: ${shared.cards.length} słów`);
+      if (manual) toast(`Wspólna lista (${res.source === 'sheet' ? 'Arkusz Google' : 'words.json'}): ${shared.cards.length} słów`);
       announceNew();
       if (!session) render();
-    } catch (e) { if (manual) toast('Nie udało się pobrać listy (brak internetu?)'); }
+    } else if (manual) toast('Nie udało się pobrać listy: ' + (err || 'brak internetu?'), 4000);
   }
 
   // ---------- zdarzenia ----------
@@ -823,6 +912,19 @@
         const out = { version: 1, updated: new Date().toISOString(), cards };
         await saveFile('words.json', JSON.stringify(out, null, 1));
         toast(`Plik gotowy: ${cards.length} słów (nowych: ${rows.length})`, 3500); break;
+      }
+      case 'sheet-copy': {
+        const lesson = $('#shLesson').value || todayISO(), tag = $('#shTag').value.trim();
+        const rows = markDups(parseLines($('#shText').value), shared.cards || []).filter(r => !r.err && !r.dup);
+        if (!rows.length) { toast('Brak nowych słów'); break; }
+        const clean = s => String(s || '').replace(/[\t\r\n]+/g, ' ').trim();
+        const tsv = rows.map(r => ['', r.es, r.pl, r.ex, [...new Set(r.tags.concat(tag ? [tag] : []))].join(', '), lesson].map(clean).join('\t')).join('\n');
+        let ok = false;
+        try { await navigator.clipboard.writeText(tsv); ok = true; } catch (e) { /* brak dostępu do schowka */ }
+        const out = $('#shOut'); out.value = tsv; out.hidden = false;
+        if (ok) toast(`Skopiowano wierszy: ${rows.length}. Wklej w arkuszu w kolumnie A.`, 4000);
+        else { out.focus(); out.select(); toast('Zaznacz tekst poniżej i skopiuj go ręcznie', 4000); }
+        break;
       }
       case 'sync': syncShared(true); break;
       case 'backup': backup(); break;
