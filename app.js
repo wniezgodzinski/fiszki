@@ -13,7 +13,7 @@
   const DIRS = ['es2pl', 'pl2es'];
   const DIR_LABEL = { es2pl: 'ES → PL', pl2es: 'PL → ES' };
   const HTTP = /^https?:$/.test(location.protocol);
-  const APP_VERSION = '6 (2026-11-21)';
+  const APP_VERSION = '7 (2026-11-21)';
 
   const uid = p => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -593,7 +593,7 @@
   }
 
   async function backup() {
-    const data = { app: 'fiszki-es', type: 'profile-backup', version: 1, exported: new Date().toISOString(), profile: P };
+    const data = { app: 'fiszki-es', type: 'profile-backup', version: 1, exported: new Date().toISOString(), pid: profiles.active, profile: P };
     const name = `fiszki-kopia-${P.name.replace(/[^\w-]+/g, '_')}-${todayISO()}.json`;
     if (await saveFile(name, JSON.stringify(data))) { P.lastBackup = Date.now(); saveP(); toast('Kopia zapisana'); render(); }
   }
@@ -607,7 +607,15 @@
         const name = P.name;
         P = Object.assign(defaultProfile(name), d.profile, { name });
         P.settings = Object.assign(defaultProfile(name).settings, d.profile.settings || {});
+        // przejmij dawny identyfikator profilu, żeby w porównaniu wyników nie powstał drugi wiersz
+        if (d.pid && /^[\w-]{3,40}$/.test(d.pid) && d.pid !== profiles.active && !profiles.list.some(p => p.id === d.pid)) {
+          const old = profiles.active;
+          localStorage.removeItem(K.p(old));
+          profiles.list.find(p => p.id === old).id = d.pid;
+          profiles.active = d.pid; saveProfiles();
+        }
         saveP(); toast('Przywrócono kopię'); render();
+        lastPush = 0; syncStats(true);
       } catch (e) { alert('To nie jest poprawny plik kopii fiszek.'); }
     };
     r.readAsText(file);
@@ -836,7 +844,8 @@
     if (!force && Date.now() - lastPush < 60e3) return false;
     lastPush = Date.now();
     try {
-      const share = P.settings.shareStats !== false;
+      // nowy profil bez żadnej nauki nic nie wysyła (np. tuż po ponownej instalacji, przed przywróceniem kopii)
+      const share = P.settings.shareStats !== false && Object.keys(P.days).some(k => P.days[k].rev > 0);
       const url = CONFIG.statsUrl + (CONFIG.statsUrl.includes('?') ? '&' : '?') +
         (share ? 'action=push&data=' + encodeURIComponent(JSON.stringify(statsSummary())) : 'action=get') + '&t=' + Date.now();
       const r = await fetch(url, { cache: 'no-store' });
@@ -858,7 +867,7 @@
       today: p.day === dayKey() ? p.today : 0,
       streak: (p.last || '') >= yesterday ? p.streak : 0
     }));
-    if (P.settings.shareStats !== false) list.push(me);
+    if (P.settings.shareStats !== false && me.total > 0) list.push(me);
     if (!list.length) return '';
     list.sort((a, b) => b.rev7 - a.rev7 || b.streak - a.streak);
     const cols = [['streak', '🔥'], ['today', 'dziś'], ['rev7', '7 dni'], ['acc30', '✔%'], ['learned', 'słowa'], ['mature', '🏅']];
