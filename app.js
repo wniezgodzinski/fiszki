@@ -13,6 +13,7 @@
   const DIRS = ['es2pl', 'pl2es'];
   const DIR_LABEL = { es2pl: 'ES → PL', pl2es: 'PL → ES' };
   const HTTP = /^https?:$/.test(location.protocol);
+  const APP_VERSION = '6 (2026-11-21)';
 
   const uid = p => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -700,6 +701,12 @@
         <button class="btn inline secondary" data-act="new-profile">+ Dodaj profil</button>
         ${profiles.list.length > 1 ? `<button class="btn inline danger" data-act="del-profile">Usuń bieżący profil</button>` : ''}
       </div>
+      <div class="panel">
+        <b>Aktualizacja aplikacji</b>
+        <p class="small muted">Wersja ${APP_VERSION}. Aplikacja aktualizuje się sama po ponownym otwarciu.
+        Jeśli mimo to widzisz starą wersję – użyj przycisku (postępy i ustawienia zostają).</p>
+        <button class="btn inline ghost" data-act="force-update">⟳ Wymuś aktualizację</button>
+      </div>
       <p class="muted small">Fiszki ES · dane zapisane lokalnie w tej przeglądarce. ${HTTP ? '' : '<br>⚠️ Uruchomiono z pliku – wspólna lista i tryb offline działają dopiero z adresu internetowego.'}</p>`;
     view.querySelectorAll('[data-set]').forEach(el => el.addEventListener('change', () => {
       const k = el.dataset.set;
@@ -1001,6 +1008,15 @@
         else { out.focus(); out.select(); toast('Zaznacz tekst poniżej i skopiuj go ręcznie', 4000); }
         break;
       }
+      case 'force-update': {
+        toast('Pobieram najnowszą wersję…');
+        try {
+          if ('serviceWorker' in navigator) { const regs = await navigator.serviceWorker.getRegistrations(); await Promise.all(regs.map(r => r.unregister())); }
+          if (window.caches) { const ks = await caches.keys(); await Promise.all(ks.map(k => caches.delete(k))); }
+        } catch (err) { /* */ }
+        setTimeout(() => location.replace(location.pathname + '?v=' + Date.now()), 400);
+        break;
+      }
       case 'sync': syncShared(true); break;
       case 'board-refresh': toast('Odświeżam…'); if (await syncStats(true)) toast('Porównanie zaktualizowane'); else toast('Nie udało się pobrać wyników'); break;
       case 'backup': backup(); break;
@@ -1030,7 +1046,17 @@
   // ---------- start ----------
   function boot() {
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-    if ('serviceWorker' in navigator && HTTP) navigator.serviceWorker.register('sw.js').catch(() => {});
+    if ('serviceWorker' in navigator && HTTP) {
+      navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => {
+        // przy powrocie do aplikacji (iPhone jej nie zamyka, tylko usypia) sprawdź, czy jest nowa wersja
+        document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+      }).catch(() => {});
+      // nowa wersja przejęła stronę → przeładuj raz, żeby od razu ją pokazać (nie w trakcie sesji nauki)
+      let reloaded = false; const hadController = !!navigator.serviceWorker.controller;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (!hadController || reloaded || session) return; reloaded = true; location.reload();
+      });
+    }
     if (!profiles || !profiles.list.length) {
       profiles = null;
       render0();
