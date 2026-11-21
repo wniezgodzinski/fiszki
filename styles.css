@@ -183,6 +183,16 @@ textarea { min-height: 140px; font-family: ui-monospace, Consolas, monospace; fo
 .heat .h1 { background: var(--heat1); } .heat .h2 { background: var(--heat2); } .heat .h3 { background: var(--heat3); } .heat .h4 { background: var(--heat4); }
 .bars { display: flex; align-items: flex-end; gap: 4px; height: 90px; }
 .bars div { flex: 1; background: var(--easy); border-radius: 4px 4px 0 0; min-height: 2px; position: relative; }
+.bars .grp { display: flex; align-items: flex-end; gap: 1px; height: 100%; background: none; border-radius: 0; }
+.bars .grp div { flex: 1; }
+.board { width: 100%; border-collapse: collapse; font-size: .82rem; margin-top: 8px; }
+.board th { font-weight: 600; color: var(--muted); font-size: .7rem; text-align: center; padding: 4px 2px; }
+.board td { text-align: center; padding: 8px 2px; border-top: 1px solid var(--line); white-space: nowrap; }
+.board td:first-child { text-align: left; white-space: normal; font-weight: 700; }
+.board tr.me td { background: var(--accent-soft); }
+.board td.top, .top { font-weight: 800; color: var(--accent); }
+.board th:first-child { width: 34%; }
+.board .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; }
 .bars-labels { display: flex; gap: 4px; font-size: .65rem; color: var(--muted); }
 .bars-labels span { flex: 1; text-align: center; }
 

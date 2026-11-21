@@ -1,6 +1,6 @@
 // Service worker: aplikacja działa offline; words.json zawsze najpierw z sieci.
 // Po każdej zmianie plików aplikacji podnieś numer wersji, żeby telefony pobrały nową wersję.
-const CACHE = 'fiszki-v4';
+const CACHE = 'fiszki-v5';
 const FILES = ['./', 'index.html', 'styles.css', 'srs.js', 'app.js', 'manifest.json',
   'icon-192.png', 'icon-512.png', 'apple-touch-icon.png'];
 

@@ -43,7 +43,7 @@
   function defaultProfile(name) {
     return {
       name, created: Date.now(),
-      settings: { newPerDay: 10, es2pl: true, pl2es: true, typingShare: 20, autoSpeak: false, maxReviews: 200 },
+      settings: { newPerDay: 10, es2pl: true, pl2es: true, typingShare: 20, autoSpeak: false, maxReviews: 200, shareStats: true },
       prog: {}, priv: [], known: {}, seen: {}, days: {},
       newToday: { day: '', es2pl: 0, pl2es: 0 }, lastBackup: 0
     };
@@ -212,6 +212,7 @@
     session = null; document.body.classList.remove('in-session');
     if ('speechSynthesis' in window) speechSynthesis.cancel();
     render();
+    syncStats(true);
   }
   function pickNext() {
     const S = session, now = Date.now(), avoid = S.cur ? S.cur.id : null;
@@ -648,6 +649,7 @@
         <div><b>${rev30 ? Math.round(100 * ok30 / rev30) : 0}%</b><span>trafność (30 dni)</span></div>
         <div><b>${counts.mature}</b><span>opanowane</span></div>
       </div>
+      ${renderBoard()}
       <div class="panel small">
         Wszystkich słów: <b>${cards.length}</b> · nowe ${counts.new} · w nauce ${counts.learn} · powtarzane ${counts.young} ·
         opanowane ${counts.mature} · trudne ${counts.hard} · znane ${counts.known}
@@ -657,8 +659,7 @@
         <div class="bars" style="margin-top:10px">${fc.map(n => `<div style="height:${Math.round(100 * n / mx)}%" title="${n}"></div>`).join('')}</div>
         <div class="bars-labels">${fc.map((n, i) => `<span>${i === 0 ? 'dziś' : dn[new Date(now + i * SRS.DAY).getDay()]}<br>${n}</span>`).join('')}</div></div>
       <div class="panel"><b>Najtrudniejsze słowa</b>
-        ${hardest.length ? `<ul class="wlist" style="margin-top:8px">${hardest.map(x => `<li data-act="card" data-id="${esc(x.c.id)}"><div class="w"><div class="es">${esc(x.c.es)}</div><div class="pl">${esc(x.c.pl)}</div></div><div class="meta">${x.l}× zapomniane</div></li>`).join('')}</ul>` : '<p class="muted small">Jeszcze brak – i oby tak zostało 🙂</p>'}</div>
-      <p class="muted small">Porównanie wyników między profilami (rywalizacja) pojawi się w kolejnej wersji – wymaga synchronizacji przez internet.</p>`;
+        ${hardest.length ? `<ul class="wlist" style="margin-top:8px">${hardest.map(x => `<li data-act="card" data-id="${esc(x.c.id)}"><div class="w"><div class="es">${esc(x.c.es)}</div><div class="pl">${esc(x.c.pl)}</div></div><div class="meta">${x.l}× zapomniane</div></li>`).join('')}</ul>` : '<p class="muted small">Jeszcze brak – i oby tak zostało 🙂</p>'}</div>`;
   }
 
   function renderSettings() {
@@ -674,6 +675,7 @@
         <div class="switch"><span>Wpisywanie co którąś powtórkę</span><select data-set="typingShare">
           ${[[0, 'nigdy'], [10, '10%'], [20, '20%'], [35, '35%'], [50, '50%'], [100, 'zawsze']].map(([v, l]) => `<option value="${v}" ${S.typingShare == v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
         <div class="switch"><span>Automatycznie czytaj po hiszpańsku</span><input type="checkbox" data-set="autoSpeak" ${S.autoSpeak ? 'checked' : ''}></div>
+        <div class="switch"><span>Pokazuj moje wyniki w porównaniu</span><input type="checkbox" data-set="shareStats" ${S.shareStats !== false ? 'checked' : ''}></div>
         <div class="switch"><span>Maks. powtórek w sesji</span><input type="number" min="10" max="1000" data-set="maxReviews" value="${S.maxReviews}"></div>
         <p class="muted small">PL → ES pojawia się dla słowa dopiero, gdy ES → PL jest już przyswojone.<br>
         🔊 Nie słychać głosu? Na iPhonie wyłącz tryb cichy i pogłośnij.</p>
@@ -727,7 +729,7 @@
   }
   function switchProfile(id) {
     profiles.active = id; saveProfiles(); P = loadProfile(id) || defaultProfile('?');
-    closeModal(); tab = 'home'; render(); announceNew();
+    closeModal(); tab = 'home'; render(); announceNew(); syncStats(true);
   }
   function profilePicker() {
     openModal(`<h2>Kto się uczy?</h2>
@@ -802,6 +804,78 @@
     });
     return cards;
   }
+  // ---------- porównanie wyników (statystyki przez skrypt arkusza) ----------
+  let board = LS.get('fisz.v1.board', { fetched: 0, profiles: [] });
+  function statsSummary() {
+    const now = Date.now(), cards = allCards();
+    const days14 = [];
+    for (let i = 13; i >= 0; i--) { const d = P.days[dayKey(now - i * SRS.DAY)]; days14.push(d ? d.rev : 0); }
+    let rev7 = 0, rev30 = 0, ok30 = 0, total = 0, last = '';
+    for (let i = 0; i < 30; i++) { const d = P.days[dayKey(now - i * SRS.DAY)]; if (d) { rev30 += d.rev; ok30 += d.ok; if (i < 7) rev7 += d.rev; } }
+    Object.keys(P.days).forEach(k => { total += P.days[k].rev; if (P.days[k].rev > 0 && k > last) last = k; });
+    const st8 = cards.map(cardStatus);
+    return {
+      pid: profiles.active, name: P.name, v: 1, at: new Date().toISOString(), day: dayKey(),
+      streak: streak(), today: (P.days[dayKey()] || {}).rev || 0, rev7, rev30,
+      acc30: rev30 ? Math.round(100 * ok30 / rev30) : 0, total, last,
+      learned: st8.filter(s => s !== 'new' && s !== 'known').length,
+      mature: st8.filter(s => s === 'mature').length, known: st8.filter(s => s === 'known').length,
+      days14
+    };
+  }
+  let lastPush = 0;
+  async function syncStats(force) {
+    if (!HTTP || !CONFIG.statsUrl) return false;
+    if (!force && Date.now() - lastPush < 60e3) return false;
+    lastPush = Date.now();
+    try {
+      const share = P.settings.shareStats !== false;
+      const url = CONFIG.statsUrl + (CONFIG.statsUrl.includes('?') ? '&' : '?') +
+        (share ? 'action=push&data=' + encodeURIComponent(JSON.stringify(statsSummary())) : 'action=get') + '&t=' + Date.now();
+      const r = await fetch(url, { cache: 'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const d = await r.json();
+      if (!Array.isArray(d.profiles)) throw new Error('format');
+      board = { fetched: Date.now(), profiles: d.profiles };
+      LS.set('fisz.v1.board', board);
+      if (!session && tab === 'stats') renderStats();
+      return true;
+    } catch (e) { return false; }
+  }
+  function renderBoard() {
+    if (!CONFIG.statsUrl) return `<div class="panel"><b>🏆 Porównanie</b><p class="muted small">Porównanie z innymi profilami zacznie działać po podłączeniu skryptu arkusza (INSTRUKCJA.md, sekcja 5b).</p></div>`;
+    const me = statsSummary();
+    const yesterday = dayKey(Date.now() - SRS.DAY);
+    // dane wysłane innego dnia: "dziś" = 0, a seria przepada, jeśli przerwa była dłuższa niż dzień
+    const list = (board.profiles || []).filter(p => p && p.pid !== me.pid).map(p => Object.assign({}, p, {
+      today: p.day === dayKey() ? p.today : 0,
+      streak: (p.last || '') >= yesterday ? p.streak : 0
+    }));
+    if (P.settings.shareStats !== false) list.push(me);
+    if (!list.length) return '';
+    list.sort((a, b) => b.rev7 - a.rev7 || b.streak - a.streak);
+    const cols = [['streak', '🔥'], ['today', 'dziś'], ['rev7', '7 dni'], ['acc30', '✔%'], ['learned', 'słowa'], ['mature', '🏅']];
+    const best = {}; cols.forEach(([k]) => { best[k] = Math.max(...list.map(p => p[k] || 0)); });
+    const ago = p => { if (!p.last) return 'jeszcze bez nauki'; if (p.last === dayKey()) return 'uczył(a) się dziś'; const d = Math.round((new Date(dayKey()) - new Date(p.last)) / SRS.DAY); return d === 1 ? 'ostatnio wczoraj' : `ostatnio ${d} dni temu`; };
+    const colors = ['var(--accent)', 'var(--easy)', 'var(--hard)', 'var(--again)'];
+    const mx = Math.max(1, ...list.flatMap(p => p.days14 || []));
+    const dn = ['nd', 'pn', 'wt', 'śr', 'cz', 'pt', 'sb'];
+    return `<div class="panel"><b>🏆 Porównanie</b>
+      <table class="board">
+        <tr><th></th>${cols.map(([, l]) => `<th>${l}</th>`).join('')}</tr>
+        ${list.map((p, i) => `<tr${p.pid === me.pid ? ' class="me"' : ''}>
+          <td><span class="sw" style="background:${colors[i % 4]}"></span>${esc(p.name)}<br><small class="muted">${ago(p)}</small></td>
+          ${cols.map(([k]) => `<td class="${best[k] > 0 && p[k] === best[k] && list.length > 1 ? 'top' : ''}">${k === 'acc30' ? (p[k] || 0) + '%' : (p[k] || 0)}</td>`).join('')}</tr>`).join('')}
+      </table>
+      <p class="muted small" style="margin:6px 0 0">🔥 seria dni · dziś / 7 dni = liczba odpowiedzi · ✔% trafność (30 dni) · słowa = w nauce · 🏅 opanowane · <span class="top">pogrubione</span> = najlepszy wynik</p>
+      <p class="muted small" style="margin:12px 0 4px">Odpowiedzi w ostatnich 14 dniach</p>
+      <div class="bars" style="height:80px">${Array.from({ length: 14 }, (_, d) => `<div class="grp">${list.map((p, i) => `<div style="height:${Math.round(100 * ((p.days14 || [])[d] || 0) / mx)}%;background:${colors[i % 4]}" title="${esc(p.name)}: ${(p.days14 || [])[d] || 0}"></div>`).join('')}</div>`).join('')}</div>
+      <div class="bars-labels">${Array.from({ length: 14 }, (_, d) => `<span>${d % 2 ? '' : dn[new Date(Date.now() - (13 - d) * SRS.DAY).getDay()]}</span>`).join('')}</div>
+      <p class="muted small" style="margin-bottom:0">Aktualizacja: ${board.fetched ? new Date(board.fetched).toLocaleString('pl-PL') : '—'}
+        · <a href="#" data-act="board-refresh">odśwież</a></p>
+    </div>`;
+  }
+
   async function fetchJsonList() {
     const r = await fetch('words.json?t=' + Date.now(), { cache: 'no-store' });
     if (!r.ok) throw new Error(r.status);
@@ -839,6 +913,7 @@
   // ---------- zdarzenia ----------
   document.querySelector('.tabbar').addEventListener('click', e => {
     const b = e.target.closest('button[data-tab]'); if (!b) return; tab = b.dataset.tab; render(); window.scrollTo(0, 0);
+    if (tab === 'stats') syncStats(false);
   });
   $('#profileBtn').addEventListener('click', () => { if (!session) profilePicker(); });
 
@@ -927,6 +1002,7 @@
         break;
       }
       case 'sync': syncShared(true); break;
+      case 'board-refresh': toast('Odświeżam…'); if (await syncStats(true)) toast('Porównanie zaktualizowane'); else toast('Nie udało się pobrać wyników'); break;
       case 'backup': backup(); break;
       case 'switch': switchProfile(id); break;
       case 'new-profile': askName('Nowy profil', name => { createProfile(name); tab = 'home'; render(); }); break;
@@ -964,7 +1040,7 @@
     P = loadProfile(profiles.active) || (createProfile('Ja'), P);
     render();
     if (profiles.list.length > 1) profilePicker();
-    syncShared(false);
+    syncShared(false).then(() => syncStats(true));
   }
   function render0() { view.innerHTML = '<p class="muted">Ładowanie…</p>'; }
   boot();
