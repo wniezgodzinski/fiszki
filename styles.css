@@ -142,6 +142,8 @@ p { line-height: 1.45; }
 }
 .mic.listening { border-color: var(--again); color: var(--again); background: rgba(214, 69, 69, .08); animation: pulse 1.2s infinite; }
 @keyframes pulse { 50% { opacity: .55; } }
+.miclog { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px; font-size: .78rem;
+  min-height: 160px; max-height: 280px; overflow: auto; white-space: pre-wrap; margin-top: 10px; }
 .verdict { margin-top: 12px; font-weight: 700; }
 .verdict.ok { color: var(--good); } .verdict.bad { color: var(--again); } .verdict.meh { color: var(--hard); }
 .diff-you { text-decoration: line-through; color: var(--again); }

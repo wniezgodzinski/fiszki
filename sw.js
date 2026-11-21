@@ -1,6 +1,6 @@
 // Service worker: aplikacja działa offline, ale zawsze najpierw próbuje pobrać świeże pliki z sieci.
 // Po każdej zmianie plików aplikacji podnieś numer wersji (i APP_VERSION w app.js).
-const CACHE = 'fiszki-v10';
+const CACHE = 'fiszki-v11';
 const FILES = ['./', 'index.html', 'styles.css', 'srs.js', 'conj.js', 'app.js', 'manifest.json',
   'icon-192.png', 'icon-512.png', 'apple-touch-icon.png'];
 
